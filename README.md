@@ -69,6 +69,8 @@ The repo's own `.claude/settings.json` sets the variable, so sessions started in
 
   ![The details panel open beside the session, listing every required check with the failing one marked](docs/details.png)
 
+- **Silence a PR**: hover the line and press `mute`. The line keeps updating but that PR no longer toasts, flashes or plays a sound; the line ends in `· muted`. Press `unmute` to turn alerts back on.
+- **Silence every PR**: open `/config` and turn on **Mute all PR alerts**. It applies at once, is saved across sessions, and every line ends in `· muted` while it is on. Turn it off to get alerts back; PRs you muted one by one stay muted.
 - **Stop watching**: hover the line and press `×`, or paste the same URL again as the whole prompt. A paste of several URLs toggles each one; a URL inside a normal prompt never stops anything.
 
 Several PRs stack, one line each, in the order you added them.

@@ -14,6 +14,8 @@ const POLL_MS = 60_000
 // macOS system sounds, played with afplay when present; silent elsewhere
 const SOUND_CHANGE = '/System/Library/Sounds/Glass.aiff'
 const SOUND_FAIL = '/System/Library/Sounds/Basso.aiff'
+// the /config toggle from plugin.json's userConfig; silences every PR while on
+const MUTE_ALL = 'cc-pr-tracker.muteAll'
 
 type Check = { name: string; bucket: string; link: string }
 type View = { number: number; title: string; state: string; isDraft: boolean; mergeable: string; mergeStateStatus: string; reviewDecision: string }
@@ -46,7 +48,7 @@ export function toCheck(c: Context): Check {
     : c.conclusion === 'CANCELLED' ? 'cancel' : 'fail'
   return { name: clean(c.name ?? ''), bucket, link: c.detailsUrl ?? '' }
 }
-type Pr = { url: string; id: string; label: string; pane: string; auto?: boolean; view?: View; required: Check[]; others: Check[]; updated?: number; error?: string; busy?: boolean }
+type Pr = { url: string; id: string; label: string; pane: string; auto?: boolean; muted?: boolean; view?: View; required: Check[]; others: Check[]; updated?: number; error?: string; busy?: boolean }
 
 const ICON: Record<string, [string, string]> = { pass: ['✓', 'green'], fail: ['✗', 'red'], pending: ['●', 'yellow'], skipping: ['○', 'gray'], cancel: ['⊘', 'red'] }
 const MERGE: Record<string, string> = { CLEAN: 'green', HAS_HOOKS: 'green', UNSTABLE: 'yellow', BEHIND: 'yellow', BLOCKED: 'red', DIRTY: 'red', DRAFT: 'gray', UNKNOWN: 'gray' }
@@ -71,6 +73,7 @@ export function prChanges(prevMerge: string | undefined, prevBuckets: Map<string
 }
 
 let flashing = false
+let muteAll = false
 let poll: { cancel(): void } | undefined
 const prs = new Map<string, Pr>()
 // built in session.start, where $ is in hand; later hooks call them
@@ -95,6 +98,7 @@ export const register: Register = on => {
         .catch(err => log(`cmux ${args[0]} failed: ${err}`))
     }
     const hasSounds = await $.fs.exists(SOUND_CHANGE)
+    muteAll = (await $.config.list()).find(row => row.key === MUTE_ALL)?.value === true
     const alert = (sound: string) => {
       flashing = true
       $.ui.invalidate('ui.render')
@@ -136,7 +140,8 @@ export const register: Register = on => {
         pr.others = contexts.filter(c => !c.isRequired).map(toCheck)
         pr.error = undefined
         const changes = prChanges(prevMerge, prevBuckets, v.mergeStateStatus, pr.required)
-        if (changes.length) {
+        // a muted PR (or every PR, under muteAll) still updates its line, it just never alerts
+        if (changes.length && !pr.muted && !muteAll) {
           const failed = pr.required.some(c => c.bucket === 'fail' && prevBuckets.get(c.name) !== 'fail')
           $.ui.toast(`${pr.label} ${changes.join(' · ')}`, { timeoutMs: 8000 })
           alert(failed ? SOUND_FAIL : SOUND_CHANGE)
@@ -167,6 +172,13 @@ export const register: Register = on => {
       refresh?.(pr)
       $.ui.invalidate('ui.render')
     }
+    return r
+  })
+
+  // flipping the toggle in /config takes effect at once
+  on('config.set', { key: MUTE_ALL }, async ($, e, next) => {
+    const r = await next(e)
+    if (!r.deny) { muteAll = r.value === true; $.ui.invalidate('ui.render') }
     return r
   })
 
@@ -239,10 +251,12 @@ export const register: Register = on => {
                 <Text color="yellow">{n('pending') ? ` ●${n('pending')}` : ''}</Text>
                 <Text color="red">{otherFails ? ` (+${otherFails} optional ✗)` : ''}</Text>
                 <Text color="red">{pr.error ? ' · refresh failed' : ''}</Text>
+                <Text dimColor>{pr.muted || muteAll ? ' · muted' : ''}</Text>
                 <Text dimColor>{` · ${v.title}`}</Text>
               </Text>
               <Box display="none" hover={{ display: 'flex' }} flexShrink={0} flexDirection="row">
                 <Button key={`open:${pr.pane}`} label="open" onPress={() => openUrl?.(pr.url)} />
+                <Button key={`mute:${pr.pane}`} label={pr.muted ? 'unmute' : 'mute'} onPress={() => { pr.muted = !pr.muted; $.ui.invalidate('ui.render') }} />
                 <Button key={`details:${pr.pane}`} label="details" onPress={() => { $.ui.open({ id: pr.pane, title: pr.id, focus: true }) }} />
                 <Button key={`stop:${pr.pane}`} label="×" onPress={() => stop?.(pr)} />
               </Box>

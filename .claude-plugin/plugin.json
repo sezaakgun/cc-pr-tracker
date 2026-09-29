@@ -1,6 +1,6 @@
 {
   "name": "cc-pr-tracker",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Watch GitHub PRs from a Claude Code session: merge state, review and required checks above the prompt, with alerts when they change",
   "author": {
     "name": "Seza Akgün"
@@ -14,5 +14,13 @@
     "ci",
     "function-hooks",
     "cmux"
-  ]
+  ],
+  "userConfig": {
+    "muteAll": {
+      "type": "boolean",
+      "title": "Mute all PR alerts",
+      "description": "Watched PRs keep updating but never toast, flash, play a sound or post a cmux notification.",
+      "default": false
+    }
+  }
 }
