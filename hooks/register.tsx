@@ -19,7 +19,7 @@ const MUTE_ALL = 'cc-pr-tracker.muteAll'
 
 type Check = { name: string; bucket: string; link: string }
 type View = { number: number; title: string; state: string; isDraft: boolean; mergeable: string; mergeStateStatus: string; reviewDecision: string }
-type Context = { __typename: string; isRequired: boolean; name?: string; status?: string | null; conclusion?: string | null; detailsUrl?: string; context?: string; state?: string; targetUrl?: string }
+type Context = { __typename: string; isRequired: boolean; name?: string; status?: string | null; conclusion?: string | null; detailsUrl?: string; startedAt?: string | null; context?: string; state?: string; targetUrl?: string; createdAt?: string | null }
 
 // one call replaces `gh pr view` plus `gh pr checks`; isRequired is per PR
 const QUERY = `query($o: String!, $r: String!, $n: Int!) {
@@ -27,8 +27,8 @@ const QUERY = `query($o: String!, $r: String!, $n: Int!) {
     number title state isDraft mergeable mergeStateStatus reviewDecision
     commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes {
       __typename
-      ... on CheckRun { name status conclusion detailsUrl isRequired(pullRequestNumber: $n) }
-      ... on StatusContext { context state targetUrl isRequired(pullRequestNumber: $n) }
+      ... on CheckRun { name status conclusion detailsUrl startedAt isRequired(pullRequestNumber: $n) }
+      ... on StatusContext { context state targetUrl createdAt isRequired(pullRequestNumber: $n) }
     } } } } } }
   } }
 }`
@@ -48,7 +48,17 @@ export function toCheck(c: Context): Check {
     : c.conclusion === 'CANCELLED' ? 'cancel' : 'fail'
   return { name: clean(c.name ?? ''), bucket, link: c.detailsUrl ?? '' }
 }
-type Pr = { url: string; id: string; label: string; pane: string; auto?: boolean; muted?: boolean; view?: View; required: Check[]; others: Check[]; updated?: number; error?: string; busy?: boolean }
+const startOf = (c: Context) => c.startedAt ?? c.createdAt ?? '~'
+export function latestPerName(contexts: Context[]): Context[] {
+  const latest = new Map<string, Context>()
+  for (const c of contexts) {
+    const key = `${c.__typename}:${c.name ?? c.context ?? ''}`
+    const seen = latest.get(key)
+    if (!seen || startOf(c) >= startOf(seen)) latest.set(key, c)
+  }
+  return [...latest.values()]
+}
+type Pr ={ url: string; id: string; label: string; pane: string; auto?: boolean; muted?: boolean; view?: View; required: Check[]; others: Check[]; updated?: number; error?: string; busy?: boolean }
 
 const ICON: Record<string, [string, string]> = { pass: ['✓', 'green'], fail: ['✗', 'red'], pending: ['●', 'yellow'], skipping: ['○', 'gray'], cancel: ['⊘', 'red'] }
 const MERGE: Record<string, string> = { CLEAN: 'green', HAS_HOOKS: 'green', UNSTABLE: 'yellow', BEHIND: 'yellow', BLOCKED: 'red', DIRTY: 'red', DRAFT: 'gray', UNKNOWN: 'gray' }
@@ -128,7 +138,7 @@ export const register: Register = on => {
         const found = JSON.parse(stdout).data?.repository?.pullRequest
         if (!found) throw new Error('PR not found')
         const { number, commits, ...view } = found
-        const contexts: Context[] = commits.nodes[0]?.commit.statusCheckRollup?.contexts.nodes ?? []
+        const contexts = latestPerName(commits.nodes[0]?.commit.statusCheckRollup?.contexts.nodes ?? [])
         const prevMerge = pr.view?.mergeStateStatus
         const prevBuckets = new Map(pr.required.map(c => [c.name, c.bucket]))
         const v: View = { number, ...view, title: clean(view.title) }

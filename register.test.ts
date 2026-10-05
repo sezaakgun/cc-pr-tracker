@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { ONLY_URLS, linkable, prChanges, toCheck } from './hooks/register.tsx'
+import { ONLY_URLS, latestPerName, linkable, prChanges, toCheck } from './hooks/register.tsx'
 
 const check = (name: string, bucket: string) => ({ name, bucket, link: '' })
 
@@ -62,4 +62,20 @@ test('ONLY_URLS', () => {
   expect(ONLY_URLS.test('https://github.com/o/r/pull/1?diff=split')).toBe(true)
   expect(ONLY_URLS.test('github.com/o/r/pull/1')).toBe(false)
   expect(ONLY_URLS.test('https://github.com/o/r/pulls/1')).toBe(false)
+})
+
+test('latestPerName', () => {
+  const run = (name: string, conclusion: string | null, startedAt: string | null, status = 'COMPLETED') =>
+    ({ __typename: 'CheckRun', isRequired: true, name, status, conclusion, startedAt, detailsUrl: `https://x/${startedAt}` })
+  const cancelled = run('ai-review', 'CANCELLED', '2026-10-05T12:00:00Z')
+  const passed = run('ai-review', 'SUCCESS', '2026-10-05T12:30:00Z')
+  expect(latestPerName([cancelled, passed]).map(toCheck)).toEqual([{ name: 'ai-review', bucket: 'pass', link: 'https://x/2026-10-05T12:30:00Z' }])
+  expect(latestPerName([passed, cancelled]).map(toCheck)).toEqual([{ name: 'ai-review', bucket: 'pass', link: 'https://x/2026-10-05T12:30:00Z' }])
+  const queued = run('ai-review', null, null, 'QUEUED')
+  expect(latestPerName([passed, queued]).map(toCheck)[0].bucket).toBe('pending')
+  const lint = run('lint', 'FAILURE', '2026-10-05T11:00:00Z')
+  expect(latestPerName([cancelled, lint, passed]).map(c => c.name)).toEqual(['ai-review', 'lint'])
+  const status = (state: string, createdAt: string) => ({ __typename: 'StatusContext', isRequired: false, context: 'ai-review', state, createdAt, targetUrl: '' })
+  const statuses = latestPerName([status('PENDING', '2026-10-05T12:00:00Z'), status('SUCCESS', '2026-10-05T12:05:00Z'), passed])
+  expect(statuses.map(toCheck).map(c => c.bucket)).toEqual(['pass', 'pass'])
 })
