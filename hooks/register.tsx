@@ -19,7 +19,7 @@ const MUTE_ALL = 'cc-pr-tracker.muteAll'
 
 type Check = { name: string; bucket: string; link: string }
 type View = { number: number; title: string; state: string; isDraft: boolean; mergeable: string; mergeStateStatus: string; reviewDecision: string }
-type Context = { __typename: string; isRequired: boolean; name?: string; status?: string | null; conclusion?: string | null; detailsUrl?: string; startedAt?: string | null; context?: string; state?: string; targetUrl?: string; createdAt?: string | null }
+type Context = { __typename: string; isRequired: boolean; name?: string; status?: string | null; conclusion?: string | null; detailsUrl?: string; startedAt?: string | null; checkSuite?: { app?: { slug?: string } | null; workflowRun?: { event?: string; workflow?: { name?: string } | null } | null } | null; context?: string; state?: string; targetUrl?: string; createdAt?: string | null }
 
 // one call replaces `gh pr view` plus `gh pr checks`; isRequired is per PR
 const QUERY = `query($o: String!, $r: String!, $n: Int!) {
@@ -27,7 +27,7 @@ const QUERY = `query($o: String!, $r: String!, $n: Int!) {
     number title state isDraft mergeable mergeStateStatus reviewDecision
     commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes {
       __typename
-      ... on CheckRun { name status conclusion detailsUrl startedAt isRequired(pullRequestNumber: $n) }
+      ... on CheckRun { name status conclusion detailsUrl startedAt checkSuite { app { slug } workflowRun { event workflow { name } } } isRequired(pullRequestNumber: $n) }
       ... on StatusContext { context state targetUrl createdAt isRequired(pullRequestNumber: $n) }
     } } } } } }
   } }
@@ -48,11 +48,15 @@ export function toCheck(c: Context): Check {
     : c.conclusion === 'CANCELLED' ? 'cancel' : 'fail'
   return { name: clean(c.name ?? ''), bucket, link: c.detailsUrl ?? '' }
 }
-const startOf = (c: Context) => c.startedAt ?? c.createdAt ?? '~'
+const startOf = (c: Context) => c.startedAt ?? c.createdAt ?? (c.status === 'COMPLETED' ? '' : '~')
+const lineage = (c: Context) => {
+  const run = c.checkSuite?.workflowRun
+  return [c.__typename, c.checkSuite?.app?.slug ?? '', run?.workflow?.name ?? '', run?.event ?? '', c.name ?? c.context ?? ''].join('\u0000')
+}
 export function latestPerName(contexts: Context[]): Context[] {
   const latest = new Map<string, Context>()
   for (const c of contexts) {
-    const key = `${c.__typename}:${c.name ?? c.context ?? ''}`
+    const key = lineage(c)
     const seen = latest.get(key)
     if (!seen || startOf(c) >= startOf(seen)) latest.set(key, c)
   }

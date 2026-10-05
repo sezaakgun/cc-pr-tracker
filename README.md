@@ -124,7 +124,7 @@ The plugin is one hooks module, `hooks/register.tsx`. It hooks five events:
 - `ui.render` on `AbovePrompt` draws the lines; on `Pane` it draws the details panel.
 - `session.start` sets up a 60-second timer that polls every watched PR.
 
-Each poll is one read-only GraphQL call through `gh api graphql`: the PR's title, state, merge state and review decision, plus every check on its head commit with GitHub's own `isRequired` flag. The plugin maps check states to the same `pass` / `fail` / `pending` / `cancel` / `skipping` buckets that `gh pr checks` uses. A failed poll keeps the previous values and marks the line `refresh failed`, so a network blip is not reported as a change. Every call has a 30-second timeout.
+Each poll is one read-only GraphQL call through `gh api graphql`: the PR's title, state, merge state and review decision, plus every check on its head commit with GitHub's own `isRequired` flag. Like `gh pr checks`, only the latest run of each check is kept: runs are grouped by app, workflow, event and name, so a re-run replaces the run it superseded while same-named checks from another workflow or event stay separate. The plugin maps check states to the same `pass` / `fail` / `pending` / `cancel` / `skipping` buckets that `gh pr checks` uses. A failed poll keeps the previous values and marks the line `refresh failed`, so a network blip is not reported as a change. Every call has a 30-second timeout.
 
 ## Develop
 

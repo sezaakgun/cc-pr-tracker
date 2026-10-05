@@ -78,4 +78,14 @@ test('latestPerName', () => {
   const status = (state: string, createdAt: string) => ({ __typename: 'StatusContext', isRequired: false, context: 'ai-review', state, createdAt, targetUrl: '' })
   const statuses = latestPerName([status('PENDING', '2026-10-05T12:00:00Z'), status('SUCCESS', '2026-10-05T12:05:00Z'), passed])
   expect(statuses.map(toCheck).map(c => c.bucket)).toEqual(['pass', 'pass'])
+  const suite = (workflow: string, event: string) => ({ app: { slug: 'github-actions' }, workflowRun: { event, workflow: { name: workflow } } })
+  const pushBuild = { ...run('build', 'FAILURE', '2026-10-05T11:56:00Z'), checkSuite: suite('Security', 'push') }
+  const prBuild = { ...run('build', 'SUCCESS', '2026-10-05T11:58:00Z'), checkSuite: suite('Security', 'pull_request') }
+  const releaseBuild = { ...run('build', 'SUCCESS', '2026-10-05T12:01:00Z'), checkSuite: suite('Release', 'push') }
+  expect(latestPerName([pushBuild, prBuild, releaseBuild]).map(toCheck).map(c => c.bucket)).toEqual(['fail', 'pass', 'pass'])
+  const rerun = { ...run('build', 'SUCCESS', '2026-10-05T12:10:00Z'), checkSuite: suite('Security', 'push') }
+  expect(latestPerName([pushBuild, rerun]).map(toCheck).map(c => c.bucket)).toEqual(['pass'])
+  const neverStarted = run('ai-review', 'CANCELLED', null)
+  expect(latestPerName([neverStarted, passed]).map(toCheck)[0].bucket).toBe('pass')
+  expect(latestPerName([passed, neverStarted]).map(toCheck)[0].bucket).toBe('pass')
 })
