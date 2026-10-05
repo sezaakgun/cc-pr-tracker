@@ -1,0 +1,18 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.5.15/schema.json",
+  "files": { "includes": ["hooks/**", "types/**", "*.test.ts"] },
+  // lint only: the code keeps its own style (no semicolons, single quotes, long lines)
+  "formatter": { "enabled": false },
+  "assist": { "enabled": false },
+  "linter": {
+    "rules": {
+      "preset": "recommended",
+      // every hook is ($, e, next) by the plugin API, whether it uses $ or not
+      "correctness": { "noUnusedFunctionParameters": "off" }
+    }
+  },
+  "overrides": [
+    // the tests answer the engine's events loosely, by design
+    { "includes": ["*.test.ts"], "linter": { "rules": { "suspicious": { "noExplicitAny": "off" } } } }
+  ]
+}
