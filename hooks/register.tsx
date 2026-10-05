@@ -17,7 +17,7 @@ const SOUND_FAIL = '/System/Library/Sounds/Basso.aiff'
 // the /config toggle from plugin.json's userConfig; silences every PR while on
 const MUTE_ALL = 'cc-pr-tracker.muteAll'
 
-type Check = { name: string; bucket: string; link: string }
+type Check = { key: string; name: string; bucket: string; link: string }
 type View = { number: number; title: string; state: string; isDraft: boolean; mergeable: string; mergeStateStatus: string; reviewDecision: string }
 type Context = { __typename: string; isRequired: boolean; name?: string; status?: string | null; conclusion?: string | null; detailsUrl?: string; startedAt?: string | null; checkSuite?: { app?: { slug?: string } | null; workflowRun?: { event?: string; workflow?: { name?: string } | null } | null } | null; context?: string; state?: string; targetUrl?: string; createdAt?: string | null }
 
@@ -37,16 +37,25 @@ const QUERY = `query($o: String!, $r: String!, $n: Int!) {
 // conclusion decides; a commit status has only a state
 // GitHub text goes to the terminal as-is, so control characters are dropped first
 const clean = (s: string) => s.replace(/[\x00-\x1f\x7f]/g, '')
-export function toCheck(c: Context): Check {
+export function toCheck(c: Context, qualify = false): Check {
+  const key = lineage(c)
   if (c.__typename === 'StatusContext') {
     const bucket = c.state === 'SUCCESS' ? 'pass' : c.state === 'PENDING' || c.state === 'EXPECTED' ? 'pending' : 'fail'
-    return { name: clean(c.context ?? ''), bucket, link: c.targetUrl ?? '' }
+    return { key, name: clean(c.context ?? ''), bucket, link: c.targetUrl ?? '' }
   }
   const bucket = c.status !== 'COMPLETED' ? 'pending'
     : c.conclusion === 'SUCCESS' || c.conclusion === 'NEUTRAL' ? 'pass'
     : c.conclusion === 'SKIPPED' ? 'skipping'
     : c.conclusion === 'CANCELLED' ? 'cancel' : 'fail'
-  return { name: clean(c.name ?? ''), bucket, link: c.detailsUrl ?? '' }
+  const run = c.checkSuite?.workflowRun
+  const origin = [run?.workflow?.name ?? c.checkSuite?.app?.slug, run?.event].filter(Boolean).join(' · ')
+  const name = qualify && origin ? `${c.name ?? ''} (${origin})` : c.name ?? ''
+  return { key, name: clean(name), bucket, link: c.detailsUrl ?? '' }
+}
+export function toChecks(contexts: Context[]): Check[] {
+  const count = new Map<string, number>()
+  for (const c of contexts) count.set(c.name ?? c.context ?? '', (count.get(c.name ?? c.context ?? '') ?? 0) + 1)
+  return contexts.map(c => toCheck(c, (count.get(c.name ?? c.context ?? '') ?? 0) > 1))
 }
 const startOf = (c: Context) => c.startedAt ?? c.createdAt ?? (c.status === 'COMPLETED' ? '' : '~')
 const lineage = (c: Context) => {
@@ -81,7 +90,7 @@ export const linkable = (href: string) => {
 // state is not a change worth an alert
 export function prChanges(prevMerge: string | undefined, prevBuckets: Map<string, string>, merge: string, required: Check[]): string[] {
   if (prevMerge === undefined) return []
-  const out = required.filter(c => prevBuckets.get(c.name) !== c.bucket).map(c => `${c.name}: ${prevBuckets.get(c.name) ?? 'new'} → ${c.bucket}`)
+  const out = required.filter(c => prevBuckets.get(c.key) !== c.bucket).map(c => `${c.name}: ${prevBuckets.get(c.key) ?? 'new'} → ${c.bucket}`)
   if (prevMerge !== merge && prevMerge !== 'UNKNOWN' && merge !== 'UNKNOWN') out.unshift(`merge: ${prevMerge.toLowerCase()} → ${merge.toLowerCase()}`)
   return out
 }
@@ -144,19 +153,20 @@ export const register: Register = on => {
         const { number, commits, ...view } = found
         const contexts = latestPerName(commits.nodes[0]?.commit.statusCheckRollup?.contexts.nodes ?? [])
         const prevMerge = pr.view?.mergeStateStatus
-        const prevBuckets = new Map(pr.required.map(c => [c.name, c.bucket]))
+        const prevBuckets = new Map(pr.required.map(c => [c.key, c.bucket]))
         const v: View = { number, ...view, title: clean(view.title) }
         // a PR Claude only mentioned that is already merged or closed is not worth a line
         if (pr.auto && prevMerge === undefined && v.state !== 'OPEN') { stop?.(pr); return }
         if (!prs.has(pr.id)) return
         pr.view = v
-        pr.required = contexts.filter(c => c.isRequired).map(toCheck)
-        pr.others = contexts.filter(c => !c.isRequired).map(toCheck)
+        const checks = toChecks(contexts)
+        pr.required = checks.filter((_, i) => contexts[i].isRequired)
+        pr.others = checks.filter((_, i) => !contexts[i].isRequired)
         pr.error = undefined
         const changes = prChanges(prevMerge, prevBuckets, v.mergeStateStatus, pr.required)
         // a muted PR (or every PR, under muteAll) still updates its line, it just never alerts
         if (changes.length && !pr.muted && !muteAll) {
-          const failed = pr.required.some(c => c.bucket === 'fail' && prevBuckets.get(c.name) !== 'fail')
+          const failed = pr.required.some(c => c.bucket === 'fail' && prevBuckets.get(c.key) !== 'fail')
           $.ui.toast(`${pr.label} ${changes.join(' · ')}`, { timeoutMs: 8000 })
           alert(failed ? SOUND_FAIL : SOUND_CHANGE)
           cmux(['notify', '--title', `${pr.label}: ${failed ? 'a required check failed' : 'checks changed'}`, '--body', changes.join(' · ')])
@@ -309,7 +319,7 @@ export const register: Register = on => {
         </Box>
         <Text bold>{pr.required.length ? `Required checks (${pr.required.length})` : 'Required checks: none reported'}</Text>
         {[...pr.required, ...optionalFails].map((c, i) => (
-          <Box key={c.link || c.name} flexDirection="row">
+          <Box key={c.key} flexDirection="row">
             <Box flexShrink={0}>
               <Text color={ICON[c.bucket]?.[1] ?? 'gray'}>{`${ICON[c.bucket]?.[0] ?? '?'} `}</Text>
             </Box>
