@@ -1,7 +1,7 @@
 import { expect, test } from 'bun:test'
-import { ONLY_URLS, linkable, prChanges, toCheck } from './hooks/register.tsx'
+import { ONLY_URLS, latestPerName, linkable, prChanges, toCheck, toChecks } from './hooks/register.tsx'
 
-const check = (name: string, bucket: string) => ({ name, bucket, link: '' })
+const check = (name: string, bucket: string) => ({ key: name, name, bucket, link: '' })
 
 // a Link with any other href makes the engine refuse the whole drawing
 test('linkable', () => {
@@ -39,14 +39,14 @@ test('toCheck', () => {
   expect(run('COMPLETED', 'CANCELLED').bucket).toBe('cancel')
   expect(run('COMPLETED', 'FAILURE').bucket).toBe('fail')
   expect(run('COMPLETED', 'TIMED_OUT').bucket).toBe('fail')
-  expect(run('COMPLETED', 'SUCCESS')).toEqual({ name: 'ci', bucket: 'pass', link: 'https://x/1' })
+  expect(run('COMPLETED', 'SUCCESS')).toMatchObject({ name: 'ci', bucket: 'pass', link: 'https://x/1' })
   // no conclusion after completion is a failure, not a pass
   expect(run('COMPLETED', null).bucket).toBe('fail')
   // control characters from GitHub never reach the terminal
   expect(toCheck({ __typename: 'CheckRun', isRequired: true, name: 'ci\x1b[31m\n', status: 'COMPLETED', conclusion: 'SUCCESS' }).name).toBe('ci[31m')
 
   const status = (state: string) => toCheck({ __typename: 'StatusContext', isRequired: false, context: 'cov', state, targetUrl: 'https://y' })
-  expect(status('SUCCESS')).toEqual({ name: 'cov', bucket: 'pass', link: 'https://y' })
+  expect(status('SUCCESS')).toMatchObject({ name: 'cov', bucket: 'pass', link: 'https://y' })
   expect(status('PENDING').bucket).toBe('pending')
   expect(status('EXPECTED').bucket).toBe('pending')
   expect(status('FAILURE').bucket).toBe('fail')
@@ -62,4 +62,39 @@ test('ONLY_URLS', () => {
   expect(ONLY_URLS.test('https://github.com/o/r/pull/1?diff=split')).toBe(true)
   expect(ONLY_URLS.test('github.com/o/r/pull/1')).toBe(false)
   expect(ONLY_URLS.test('https://github.com/o/r/pulls/1')).toBe(false)
+})
+
+test('latestPerName', () => {
+  const run = (name: string, conclusion: string | null, startedAt: string | null, status = 'COMPLETED') =>
+    ({ __typename: 'CheckRun', isRequired: true, name, status, conclusion, startedAt, detailsUrl: `https://x/${startedAt}` })
+  const cancelled = run('ai-review', 'CANCELLED', '2026-10-05T12:00:00Z')
+  const passed = run('ai-review', 'SUCCESS', '2026-10-05T12:30:00Z')
+  expect(latestPerName([cancelled, passed]).map(c => toCheck(c))).toMatchObject([{ name: 'ai-review', bucket: 'pass', link: 'https://x/2026-10-05T12:30:00Z' }])
+  expect(latestPerName([passed, cancelled]).map(c => toCheck(c))).toMatchObject([{ name: 'ai-review', bucket: 'pass', link: 'https://x/2026-10-05T12:30:00Z' }])
+  const queued = run('ai-review', null, null, 'QUEUED')
+  expect(latestPerName([passed, queued]).map(c => toCheck(c))[0].bucket).toBe('pending')
+  const lint = run('lint', 'FAILURE', '2026-10-05T11:00:00Z')
+  expect(latestPerName([cancelled, lint, passed]).map(c => c.name)).toEqual(['ai-review', 'lint'])
+  const status = (state: string, createdAt: string) => ({ __typename: 'StatusContext', isRequired: false, context: 'ai-review', state, createdAt, targetUrl: '' })
+  const statuses = latestPerName([status('PENDING', '2026-10-05T12:00:00Z'), status('SUCCESS', '2026-10-05T12:05:00Z'), passed])
+  expect(statuses.map(c => toCheck(c)).map(c => c.bucket)).toEqual(['pass', 'pass'])
+  const suite = (workflow: string, event: string) => ({ app: { slug: 'github-actions' }, workflowRun: { event, workflow: { name: workflow } } })
+  const pushBuild = { ...run('build', 'FAILURE', '2026-10-05T11:56:00Z'), checkSuite: suite('Security', 'push') }
+  const prBuild = { ...run('build', 'SUCCESS', '2026-10-05T11:58:00Z'), checkSuite: suite('Security', 'pull_request') }
+  const releaseBuild = { ...run('build', 'SUCCESS', '2026-10-05T12:01:00Z'), checkSuite: suite('Release', 'push') }
+  expect(latestPerName([pushBuild, prBuild, releaseBuild]).map(c => toCheck(c)).map(c => c.bucket)).toEqual(['fail', 'pass', 'pass'])
+  const rerun = { ...run('build', 'SUCCESS', '2026-10-05T12:10:00Z'), checkSuite: suite('Security', 'push') }
+  expect(latestPerName([pushBuild, rerun]).map(c => toCheck(c)).map(c => c.bucket)).toEqual(['pass'])
+  const neverStarted = run('ai-review', 'CANCELLED', null)
+  expect(latestPerName([neverStarted, passed]).map(c => toCheck(c))[0].bucket).toBe('pass')
+  expect(latestPerName([passed, neverStarted]).map(c => toCheck(c))[0].bucket).toBe('pass')
+
+  const builds = toChecks(latestPerName([pushBuild, prBuild, releaseBuild]))
+  expect(builds.map(c => c.name)).toEqual(['build (Security · push)', 'build (Security · pull_request)', 'build (Release · push)'])
+  expect(new Set(builds.map(c => c.key)).size).toBe(3)
+  expect(toChecks([pushBuild, lint]).map(c => c.name)).toEqual(['build', 'lint'])
+  const prev = new Map(builds.map(c => [c.key, c.bucket]))
+  expect(prChanges('BLOCKED', prev, 'BLOCKED', builds)).toEqual([])
+  const flipped = toChecks(latestPerName([{ ...pushBuild, conclusion: 'SUCCESS' }, prBuild, releaseBuild]))
+  expect(prChanges('BLOCKED', prev, 'BLOCKED', flipped)).toEqual(['build (Security · push): fail → pass'])
 })
