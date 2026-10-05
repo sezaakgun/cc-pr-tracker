@@ -1,0 +1,42 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# a newer push to the same branch or PR cancels the run it supersedes
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        # the oldest build the 0.3 features are tested on, and whatever ships next
+        claude: ['2.1.289', 'latest']
+    steps:
+      - uses: actions/checkout@v4
+      # no login needed: validate and test never call a model, and gh is faked in the tests
+      - name: Install Claude Code ${{ matrix.claude }}
+        run: |
+          curl -fsSL https://claude.ai/install.sh | bash -s ${{ matrix.claude }}
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: claude --version
+      - run: claude plugin validate .
+      - run: claude plugin test .
+
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      # Biome, pinned; the runner's own Node runs it, nothing to install
+      - run: npx --yes @biomejs/biome@2.5.15 lint --error-on-warnings
