@@ -1,6 +1,6 @@
 {
   "name": "cc-pr-tracker",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Watch GitHub PRs from a Claude Code session: merge state, review and required checks above the prompt, with alerts when they change",
   "author": {
     "name": "Seza Akgün"
@@ -62,6 +62,16 @@
         "off"
       ],
       "default": "answers and gh pr create"
+    },
+    "remember": {
+      "type": "string",
+      "title": "Remember watched PRs",
+      "description": "Where the watch list is kept: with this session, so resuming it watches the same PRs and a new session starts empty, or with the project, so every new session in this directory watches them.",
+      "options": [
+        "this session",
+        "this project"
+      ],
+      "default": "this session"
     }
   }
 }

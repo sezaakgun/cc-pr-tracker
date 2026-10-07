@@ -1,14 +1,14 @@
 /* @jsx h */
 import type { Register } from 'claude-code'
-import type { Check, Pr, View, Watched } from '../types'
+import type { Check, Pr, Stored, View, Watched } from '../types'
 
 // A GitHub PR URL in a prompt adds a line above the prompt that polls gh for the merge state and
 // the required checks; a prompt that is only the URL toggles it without a model turn. A PR URL in
 // Claude's answer, or printed by `gh pr create`, is added too. When checks or the merge state change, it toasts,
 // flashes, plays a sound and, inside cmux, flashes the session's pane and posts a notification; it
 // also adds a note Claude reads on its next turn. Claude can ask for the status itself through the
-// pr_status tool. The list survives a hot reload ($.state) and the next session in the same project
-// ($.store); a /clear drops the PRs Claude brought in.
+// pr_status tool. The list survives a hot reload ($.state) and a resume of the session ($.store; or
+// every new session in the project, under "Remember watched PRs"); a /clear drops the PRs Claude brought in.
 
 const PR_URL = /https:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/pull\/(\d+)/
 // a prompt that is nothing but PR URLs (one or more, any whitespace) toggles them without a model turn
@@ -20,6 +20,7 @@ const SOUND_FAIL = '/System/Library/Sounds/Basso.aiff'
 const CFG = 'cc-pr-tracker.'
 const STATE = { plugin: 'cc-pr-tracker', key: 'prs' } as const
 const TOOL = 'mcp__cc-pr-tracker__pr_status'
+const SESSION_TTL_MS = 30 * 24 * 3600_000
 
 type Context = { __typename: string; isRequired: boolean; name?: string; status?: string | null; conclusion?: string | null; detailsUrl?: string; startedAt?: string | null; checkSuite?: { app?: { slug?: string } | null; workflowRun?: { event?: string; workflow?: { name?: string } | null } | null } | null; context?: string; state?: string; targetUrl?: string; createdAt?: string | null }
 
@@ -99,8 +100,8 @@ export function prChanges(prevMerge: string | undefined, prevBuckets: Map<string
   return out
 }
 
-export type Cfg = { muteAll: boolean; alertOn: string; notifyClaude: boolean; sound: boolean; pollSeconds: number; autoWatch: string }
-export const DEFAULTS: Cfg = { muteAll: false, alertOn: 'every change', notifyClaude: true, sound: true, pollSeconds: 60, autoWatch: 'answers and gh pr create' }
+export type Cfg = { muteAll: boolean; alertOn: string; notifyClaude: boolean; sound: boolean; pollSeconds: number; autoWatch: string; remember: string }
+export const DEFAULTS: Cfg = { muteAll: false, alertOn: 'every change', notifyClaude: true, sound: true, pollSeconds: 60, autoWatch: 'answers and gh pr create', remember: 'this session' }
 // /config values by field laid over `base`; an unknown field, or a value of the wrong type, is ignored
 export function readCfg(fields: Readonly<Record<string, unknown>>, base: Cfg = DEFAULTS): Cfg {
   const out: Record<string, unknown> = { ...base }
@@ -158,6 +159,8 @@ let watch: ((m: RegExpExecArray, auto?: boolean, extra?: Partial<Pr>) => void) |
 let openUrl: ((url: string) => void) | undefined
 let copy: ((text: string, surface?: 'terminal' | 'desktop' | 'vscode' | 'mobile') => void) | undefined
 let save: (() => void) | undefined
+let keyOf: (() => Promise<string | undefined>) | undefined
+let storeKey: string | undefined
 
 export const register: Register = (on, options) => {
   // the /config values as this load received them; a change in /config reloads the module, and
@@ -208,13 +211,25 @@ export const register: Register = (on, options) => {
     }
 
     // the full list to $.state (a hot reload restores it as drawn), the watch list to $.store under
-    // the project root (the next session there watches the same PRs)
-    const root = await attempt('$.session.root', () => $.session.root())
-    const storeKey = root && `watched:${root}`
+    // this session's id (a resume of it watches the same PRs) or, with "Remember watched PRs" on
+    // "this project", under the project root (every new session there does)
+    keyOf = async () => {
+      if (cfg.remember === 'this project') {
+        const root = await attempt('$.session.root', () => $.session.root())
+        return root ? `watched:${root}` : undefined
+      }
+      const id = await attempt('$.session.id', () => $.session.id())
+      return id ? `session:${id}` : undefined
+    }
+    storeKey = await keyOf()
     save = () => {
       const list = [...prs.values()]
       attempt('$.state.set', () => $.state.set(STATE, list))
-      if (storeKey) attempt('$.store.set', () => $.store.set(storeKey, list.map((pr): Watched => ({ url: pr.url, auto: pr.auto, muted: pr.muted }))))
+      const key = storeKey
+      if (!key) return
+      // dated by the latest poll: every poll saves, so a list not polled for 30 days is pruned
+      const watched: Stored = { at: Math.max(0, ...list.map(pr => pr.updated ?? 0)), prs: list.map((pr): Watched => ({ url: pr.url, auto: pr.auto, muted: pr.muted })) }
+      attempt('$.store.set', () => list.length ? $.store.set(key, watched) : $.store.delete(key))
     }
 
     // one poll per PR at a time: a second call while one runs gets that one
@@ -291,18 +306,30 @@ export const register: Register = (on, options) => {
     }
 
     // a hot reload runs session.start again: the list comes back from $.state as it was drawn;
-    // a new session starts from the project's stored watch list, dropping PRs merged or closed since
+    // a resumed session (or, on "this project", any new one) starts from the stored watch list,
+    // dropping PRs merged or closed since
     const kept = (await attempt('$.state.get', () => $.state.get(STATE)))?.value
     if (kept?.length) {
       for (const pr of kept) prs.set(pr.id, pr)
       $.ui.invalidate('ui.render')
     } else if (storeKey) {
-      const stored = (await attempt('$.store.get', () => $.store.get(storeKey)) ?? []) as Watched[]
-      for (const w of stored) {
+      const key = storeKey
+      const stored = await attempt('$.store.get', () => $.store.get(key)) as Stored | Watched[] | undefined
+      // before 0.4 a project's list was stored bare
+      for (const w of (Array.isArray(stored) ? stored : stored?.prs) ?? []) {
         const m = PR_URL.exec(w.url)
         if (m) watch(m, w.auto, { muted: w.muted, dropIfClosed: true })
       }
     }
+    // a session left with PRs keeps its key; one not polled for 30 days is not coming back
+    await attempt('$.store prune', async () => {
+      const now = await $.clock.now()
+      for (const key of await $.store.keys()) {
+        if (!key.startsWith('session:') || key === storeKey) continue
+        const old = await $.store.get(key) as Stored | undefined
+        if (!old?.at || now - old.at > SESSION_TTL_MS) await $.store.delete(key)
+      }
+    })
 
     // pr_status: the model asks for the watched PRs' status instead of composing gh calls itself
     await attempt('$.tool.register', () => $.tool.register({
@@ -318,9 +345,11 @@ export const register: Register = (on, options) => {
     if (!e.key.startsWith(CFG)) return next(e)
     const r = await next(e)
     if (r.deny) return r
-    const before = cfg.pollSeconds
+    const before = cfg
     cfg = readCfg({ [e.key.slice(CFG.length)]: r.value }, cfg)
-    if (cfg.pollSeconds !== before) startPoll?.()
+    if (cfg.pollSeconds !== before.pollSeconds) startPoll?.()
+    // the list moves to where "Remember watched PRs" now keeps it, at once
+    if (cfg.remember !== before.remember) { storeKey = await keyOf?.(); save?.() }
     $.ui.invalidate('ui.render')
     return r
   })
@@ -354,7 +383,11 @@ export const register: Register = (on, options) => {
   try {
     on('session.end', async ($, e, next) => {
       const r = await next(e)
-      if (e.reason === 'clear') for (const pr of [...prs.values()]) if (pr.auto) stop?.(pr)
+      if (e.reason !== 'clear') return r
+      // the process goes on under a new session id: the old one keeps the list it had
+      storeKey = await keyOf?.()
+      for (const pr of [...prs.values()]) if (pr.auto) stop?.(pr)
+      save?.()
       return r
     })
   } catch {}

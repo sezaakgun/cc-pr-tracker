@@ -52,7 +52,7 @@ The repo's own `.claude/settings.json` still sets `CLAUDE_CODE_ENABLE_FUNCTION_H
 
 ## Use
 
-On Claude Code 2.1.289 or later the list is kept across sessions, Claude is told about changes, and the copy buttons work. Older builds watch and alert as before, in memory only.
+On Claude Code 2.1.289 or later the list comes back when you resume a session, Claude is told about changes, and the copy buttons work. Older builds watch and alert as before, in memory only.
 
 - **Watch a PR**: paste its URL as the whole prompt, several at once if you like. Or mention URLs in a normal prompt: the prompt runs as usual and the PRs are watched too.
 - **Watch a PR Claude creates or talks about**: nothing to do. Any open PR whose URL appears in Claude's answer is watched, and so is the URL `gh pr create` prints when it runs through the Bash tool. Subagent answers are not scanned.
@@ -69,7 +69,7 @@ On Claude Code 2.1.289 or later the list is kept across sessions, Claude is told
 
 Several PRs stack, one line each, in the order you added them.
 
-The list is kept per project. A new session in the same directory watches the same PRs again, minus any merged or closed since. `/clear` drops the PRs Claude brought in and keeps the ones you pasted.
+The list is kept with the session. Resuming it (`claude --resume`, `--continue`) watches the same PRs again, minus any merged or closed since; a new session starts empty. Set **Remember watched PRs** to `this project` to have every new session in the directory pick the list up instead. `/clear` drops the PRs Claude brought in and keeps the ones you pasted.
 
 ## Reading the line
 
@@ -103,6 +103,7 @@ Open `/config`; the rows are under cc-pr-tracker. Each also takes `/config cc-pr
 | Alert sound | `sound` | on | The macOS sounds; the toast, strip and cmux notification stay. |
 | Poll every (seconds) | `pollSeconds` | 60 | 30 to 3600; a value outside is held to the nearer end. One GraphQL call per PR per poll. |
 | Auto-watch PRs | `autoWatch` | answers and gh pr create | `answers and gh pr create`, `gh pr create only`, or `off`. Pasted URLs are always watched. |
+| Remember watched PRs | `remember` | this session | `this session`: resuming it brings the list back, a new session starts empty. `this project`: every new session in the directory watches the list. |
 
 ## Troubleshooting
 
@@ -113,12 +114,12 @@ Open `/config`; the rows are under cc-pr-tracker. Each also takes `/config cc-pr
 - **Hover buttons never appear.** Your terminal does not report the mouse. Cmd+click and pasting the URL again still work.
 - **Cmd+click does nothing.** Your terminal does not render hyperlinks. Hover the line and press `open`.
 - **Claude does not know about a change.** The note needs Claude Code 2.1.289 or later and **Tell Claude about changes** on in `/config`; a muted PR, **Mute all**, or **Alert on** set narrower than the change sends none. Claude reads the note on its next turn, so ask after the toast.
-- **Watched PRs disappeared.** They are kept per project directory: a session started elsewhere has its own list. A `/clear` drops the PRs Claude brought in. Paste the URLs again.
+- **Watched PRs disappeared.** They are kept with the session that watched them: resume it, or set **Remember watched PRs** to `this project`. A `/clear` drops the PRs Claude brought in. Paste the URLs again.
 
 ## Limits
 
 - Polling is every 60 seconds by default (`pollSeconds` in `/config`) through `gh`, one GraphQL call per PR per poll.
-- The watch list is stored per project directory (`$.store`); a hot reload keeps the lines as drawn (`$.state`).
+- The watch list is stored per session, or per project directory under `remember: this project` (`$.store`); a hot reload keeps the lines as drawn (`$.state`). A session's list not polled for 30 days is deleted.
 - The area above the prompt has a limited number of rows, about half the terminal. Very many PRs will scroll.
 - A headless `claude -p` run never draws. Only interactive terminal sessions show the UI.
 - A PR created in the browser or from another terminal must be pasted. Claude only auto-watches PRs whose URL appears in its answer or in `gh pr create` output.
