@@ -22,9 +22,13 @@ const gql = (pr: Record<string, unknown> = {}, checks = [run('lint', null)]) => 
 // the engine beneath the plugin; `w` records what the plugin did and `w.response` is what gh prints
 // `old`: a build before 2.1.289, where $.session.root and $.ui.copy answer nothing
 function world(on: any, store: Record<string, unknown> = {}, { old = false } = {}) {
-  const w = { gh: 0, toasts: [] as string[], response: gql(), logs: [] as string[], opened: [] as string[], copied: [] as { text: string; surface?: string }[], copyResult: { isCopied: true } as Record<string, unknown>, ghError: '', bashStdout: '', runs: [] as string[][], hold: undefined as Promise<void> | undefined, state: undefined as unknown, respond: (argv: string[]) => w.response }
+  const w = { gh: 0, toasts: [] as string[], response: gql(), logs: [] as string[], opened: [] as string[], copied: [] as { text: string; surface?: string }[], copyResult: { isCopied: true } as Record<string, unknown>, ghError: '', bashStdout: '', runs: [] as string[][], hold: undefined as Promise<void> | undefined, state: undefined as unknown, sessionId: 's1', respond: (argv: string[]) => w.response }
   const clock = mock.clock(on)
-  mock.store(on, store)
+  // $.store over `store` itself, so a test reads what the plugin wrote
+  on('store.get', async (_$: unknown, e: any) => ({ value: store[e.key] }))
+  on('store.set', async (_$: unknown, e: any) => { store[e.key] = e.value; return { value: undefined } })
+  on('store.delete', async (_$: unknown, e: any) => { delete store[e.key]; return { value: undefined } })
+  on('store.keys', async () => ({ value: Object.keys(store) }))
   mock.env(on, {})
   const ok = (value?: unknown) => async () => ({ value })
   for (const ev of ['session.start', 'session.end']) on(ev, async (_$: unknown, e: any) => e)
@@ -37,6 +41,7 @@ function world(on: any, store: Record<string, unknown> = {}, { old = false } = {
   on('tool.call', { tool: 'Bash' }, async () => ({ result: { stdout: w.bashStdout, stderr: '', interrupted: false } }))
   if (!old) {
     on('session.root', ok('/repo'))
+    on('session.id', async () => ({ value: w.sessionId }))
     on('state.get', async () => ({ value: { value: w.state, version: 0 } }))
     on('state.set', async (_$: unknown, e: any) => { w.state = e.value; return { value: { isSet: true, version: 1 } } })
   }
@@ -135,14 +140,57 @@ test('pr_status polls GitHub when called', async ($, on) => {
   expect(await status($, 'org/other#1')).toBe('org/other#1 is not watched. Watched: org/repo#7.')
 })
 
-test('a new session in the project watches the stored PRs, minus merged ones', async ($, on) => {
+test('a resumed session watches its stored PRs, minus merged ones', async ($, on) => {
   const merged = 'https://github.com/org/repo/pull/8'
-  const { w } = world(on, { 'watched:/repo': [{ url: PR, auto: false }, { url: merged, auto: false }] })
+  const { w } = world(on, { 'session:s1': { at: 0, prs: [{ url: PR, auto: false }, { url: merged, auto: false }] } })
   w.respond = argv => argv.includes('n=8') ? gql({ number: 8, state: 'MERGED' }) : w.response
   await start($)
   const text = await status($)
   expect(text).toContain('org/repo#7')
   expect(text).not.toContain('org/repo#8')
+})
+
+test('a new session in the same project starts empty, and stale sessions are pruned', async ($, on) => {
+  const store: Record<string, unknown> = { 'session:old': { at: 0, prs: [{ url: PR }] }, 'session:recent': { at: 30 * 24 * 3600_000, prs: [{ url: PR }] }, 'watched:/repo': [{ url: PR }] }
+  const { w, clock } = world(on, store)
+  w.sessionId = 's2'
+  await clock.advance(31 * 24 * 3600_000)
+  await start($)
+  expect(await status($)).toContain('No PRs are watched')
+  expect(store['session:old']).toBeUndefined()
+  expect(store['session:recent']).toBeDefined()
+  await $.prompt.submit({ text: PR, wait: false })
+  await status($)
+  expect((store['session:s2'] as any).prs).toEqual([{ url: PR, auto: false }])
+})
+
+test('Remember "this project": a new session watches the project\'s PRs, stored before 0.4 too', { options: { remember: 'this project' } }, async ($, on) => {
+  const { w } = world(on, { 'watched:/repo': [{ url: PR, auto: false }] })
+  w.sessionId = 's2'
+  await start($)
+  expect(await status($)).toContain('org/repo#7')
+})
+
+test('switching Remember to "this project" in /config stores the list for the project at once', async ($, on) => {
+  const store: Record<string, unknown> = {}
+  world(on, store)
+  await start($)
+  await $.prompt.submit({ text: PR, wait: false })
+  await status($)
+  await $.config.set({ key: 'cc-pr-tracker.remember', value: 'this project' } as any)
+  expect((store['watched:/repo'] as any).prs.map((p: any) => p.url)).toEqual([PR])
+})
+
+test('/clear moves the list to the new session id, leaving the old one for a resume', async ($, on) => {
+  const store: Record<string, unknown> = {}
+  const { w } = world(on, store)
+  await start($)
+  await $.prompt.submit({ text: PR, wait: false })
+  await $.turn.complete({ answer: 'Opened https://github.com/org/repo/pull/9 for you.' } as any)
+  w.sessionId = 's2'
+  await $.session.end({ reason: 'clear', sessionId: 's1', resume: { id: 's1' } } as any)
+  expect((store['session:s1'] as any).prs.length).toBe(2)
+  expect((store['session:s2'] as any).prs.map((p: any) => p.url)).toEqual([PR])
 })
 
 test('/clear drops the PRs Claude brought in and keeps the pasted ones', async ($, on) => {
@@ -266,7 +314,7 @@ test('on a build before 2.1.289 it watches and alerts as before, in memory', asy
   const missing = w.logs.filter(l => l.includes('unavailable'))
   expect(missing.length).toBe(new Set(missing.map(l => l.split(' unavailable')[0])).size)
   // ($.state is the test engine's own, so it never goes missing here)
-  expect(missing.map(l => l.split(' unavailable')[0])).toEqual(['cc-pr-tracker: $.session.root', 'cc-pr-tracker: $.session.append', 'cc-pr-tracker: $.ui.copy'])
+  expect(missing.map(l => l.split(' unavailable')[0])).toEqual(['cc-pr-tracker: $.session.id', 'cc-pr-tracker: $.session.append', 'cc-pr-tracker: $.ui.copy'])
 })
 
 test('a PR URL inside a normal prompt is watched and the prompt still runs', async ($, on) => {
