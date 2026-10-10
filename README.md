@@ -86,6 +86,8 @@ The line above the prompt is drawn by the terminal and the Claude Code desktop a
 - the status line under the prompt sums them up, for example `PRs: repo#7 blocked ✗1 · repo#8 clean`
 - `/prs` prints the full list whenever you want it
 
+![A session on claude.ai/code: /prs lists the watched PRs with the failing check's log link, and a later alert is a line in the transcript](docs/web.png)
+
 The toast and the note to Claude work as everywhere else. **Show PRs in the transcript** in `/config` turns this on everywhere (`always`) or off (`never`).
 
 The list is kept with the session. Resuming it (`claude --resume`, `--continue`) watches the same PRs again, minus any merged or closed since; a new session starts empty. Set **Remember watched PRs** to `this project` to have every new session in the directory pick the list up instead. `/clear` drops the PRs Claude brought in and keeps the ones you pasted.

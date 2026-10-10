@@ -1,12 +1,12 @@
 Screenshots and the demo GIF referenced by ../README.md.
 
 The images below are still the ones from the first commit, recorded on Claude Code 2.1.269 before hover
-buttons, mute, copy, alerts to Claude, `pr_status` and `/config` existed. Each one listed under "To record"
+buttons, mute, copy, alerts to Claude, `pr_status`, `/config` and `/prs` existed. Each one listed under "To record"
 replaces or adds the file of that name; the README already points at every name.
 
 ## How to record
 
-- One real session at 150x40, recorded with asciinema and rendered with agg, so every image has the same size
+- One real terminal session at 150x40, recorded with asciinema and rendered with agg, so every image has the same size
   (1373x800 at agg's defaults) and font. Stills are frames of a recording.
 - Claude Code 2.1.289 or later, the plugin installed from the marketplace (not `--plugin-dir`), in a fresh
   directory so the banner shows no repo path worth hiding. Default `/config` values unless a scene says otherwise.
@@ -37,5 +37,10 @@ replaces or adds the file of that name; the README already points at every name.
   the frame from the recording.
 - **pr-status.png** (new). Ask Claude "why is vscode#335895 red?" on the session above. The frame shows the
   `pr_status` tool call and Claude's answer naming the failing check with its log link.
-- **config.png** (new). `/config` scrolled to the cc-pr-tracker rows, all eleven visible (scroll if they do not fit), with the cursor on
+- **config.png** (new). `/config` scrolled to the cc-pr-tracker rows, all twelve visible (scroll if they do not fit), with the cursor on
   **Mute all PR alerts** so its help text shows `Now watching 5 PRs, 1 muted one by one.`
+- **web.png** (new). The same PRs followed from claude.ai/code in a browser, not the terminal (the plugin must be
+  installed in that session's environment, and its repos added to the session). Run `/prs` so the list shows each
+  line, its URL and the failing check's log link; then let a check change so the next transcript line, for example
+  `cc-pr-tracker: repo#7 · blocked · review required · ✓1 ✗1 · …`, and the `PRs: …` status line show below it.
+  A browser screenshot at about 1373x800, not an asciinema frame.
