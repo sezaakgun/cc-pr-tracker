@@ -22,7 +22,7 @@ const gql = (pr: Record<string, unknown> = {}, checks = [run('lint', null)]) => 
 // the engine beneath the plugin; `w` records what the plugin did and `w.response` is what gh prints
 // `old`: a build before 2.1.289, where $.session.root and $.ui.copy answer nothing
 function world(on: any, store: Record<string, unknown> = {}, { old = false } = {}) {
-  const w = { gh: 0, toasts: [] as string[], response: gql(), logs: [] as string[], opened: [] as string[], copied: [] as { text: string; surface?: string }[], copyResult: { isCopied: true } as Record<string, unknown>, ghError: '', bashStdout: '', runs: [] as string[][], hold: undefined as Promise<void> | undefined, state: undefined as unknown, sessionId: 's1', respond: (argv: string[]) => w.response }
+  const w = { gh: 0, toasts: [] as string[], response: gql(), logs: [] as string[], opened: [] as string[], copied: [] as { text: string; surface?: string }[], notes: [] as string[], copyResult: { isCopied: true } as Record<string, unknown>, ghError: '', bashStdout: '', runs: [] as string[][], hold: undefined as Promise<void> | undefined, state: undefined as unknown, sessionId: 's1', respond: (argv: string[]) => w.response }
   const clock = mock.clock(on)
   // $.store over `store` itself, so a test reads what the plugin wrote
   on('store.get', async (_$: unknown, e: any) => ({ value: store[e.key] }))
@@ -55,6 +55,11 @@ function world(on: any, store: Record<string, unknown> = {}, { old = false } = {
   })
   on('ui.close', ok())
   on('ui.open', async (_$: unknown, e: any) => { w.opened.push(e.id); return { value: undefined } })
+  // the note to Claude, recorded when the test engine hands $.session.append to a test's hook
+  if (!old) on('session.append', async (_$: unknown, e: any, next: any) => {
+    w.notes.push(e.message.content.map((c: { text: string }) => c.text).join(''))
+    return next(e)
+  })
   if (!old) on('ui.copy', async (_$: unknown, e: any) => { w.copied.push({ text: e.text, surface: e.surface }); return { value: w.copyResult } })
   // the engine's own drawing beneath the plugin's: nothing
   on('ui.render', async () => ({ type: 'Box', props: {}, children: [] }))
@@ -83,9 +88,11 @@ test('a required check failing alerts and tells Claude, with the log link', asyn
   w.response = gql({}, [run('lint', 'FAILURE')])
   await clock.advance(60_000)
   expect(w.toasts).toEqual(['repo#7 lint: pending → fail'])
-  // the note itself: claude plugin test (2.1.289) never hands $.session.append to a test's hook, so
-  // the call fails beneath the plugin and is logged; its text is changeNote's, tested in register.test.ts
-  expect(w.logs.some(l => l.includes('$.session.append'))).toBe(true)
+  // the note's text is changeNote's, tested in register.test.ts. A newer test engine hands it to the
+  // test's hook; 2.1.289 never does, so there the call fails beneath the plugin and is logged
+  const logged = w.logs.some(l => l.includes('$.session.append'))
+  expect(w.notes.length + (logged ? 1 : 0)).toBe(1)
+  if (w.notes.length) expect(w.notes[0]).toContain('"lint"')
 })
 
 test('Tell Claude about changes off: the toast stays, the note goes', { options: { notifyClaude: false } }, async ($, on) => {
@@ -95,6 +102,7 @@ test('Tell Claude about changes off: the toast stays, the note goes', { options:
   w.response = gql({}, [run('lint', 'FAILURE')])
   await clock.advance(60_000)
   expect(w.toasts.length).toBe(1)
+  expect(w.notes).toEqual([])
   expect(w.logs.some(l => l.includes('$.session.append'))).toBe(false)
 })
 
@@ -313,8 +321,9 @@ test('on a build before 2.1.289 it watches and alerts as before, in memory', asy
   // each missing call logged once, however often it was tried
   const missing = w.logs.filter(l => l.includes('unavailable'))
   expect(missing.length).toBe(new Set(missing.map(l => l.split(' unavailable')[0])).size)
-  // ($.state is the test engine's own, so it never goes missing here)
-  expect(missing.map(l => l.split(' unavailable')[0])).toEqual(['cc-pr-tracker: $.session.id', 'cc-pr-tracker: $.session.append', 'cc-pr-tracker: $.ui.copy'])
+  // ($.state is the test engine's own, so it never goes missing here; nor is $.session.append from
+  // 2.1.296, whose test engine answers it)
+  expect(missing.map(l => l.split(' unavailable')[0]).filter(m => !m.endsWith('$.session.append'))).toEqual(['cc-pr-tracker: $.session.id', 'cc-pr-tracker: $.ui.copy'])
 })
 
 test('a PR URL inside a normal prompt is watched and the prompt still runs', async ($, on) => {
