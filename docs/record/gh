@@ -1,0 +1,27 @@
+#!/usr/bin/env python3
+# a stand-in gh for recording the README images: answers the plugin's GraphQL call from state/*.json,
+# one file per PR (owner-repo-number.json); edit a check's state there and the next poll sees it
+import json, os, sys, zlib
+a = sys.argv[1:]
+D = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'state')
+if a[:2] == ['auth', 'status']: print('github.com\n  ✓ Logged in'); sys.exit(0)
+if a[:2] != ['api', 'graphql']: print('unsupported', file=sys.stderr); sys.exit(1)
+kv = {}
+for i, x in enumerate(a):
+    if x in ('-f', '-F') and '=' in a[i+1] and not a[i+1].startswith('query='):
+        k, v = a[i+1].split('=', 1); kv[k] = v
+f = os.path.join(D, f"{kv['o']}-{kv['r']}-{kv['n']}.json")
+if not os.path.exists(f): print(json.dumps({'data': {'repository': {'pullRequest': None}}})); sys.exit(0)
+s = json.load(open(f))
+def run(c):
+    name, st = c[0], c[1]
+    req = c[2] if len(c) > 2 else True
+    concl = {'pass': 'SUCCESS', 'fail': 'FAILURE', 'pending': None, 'skip': 'SKIPPED'}[st]
+    slug = name.lower().replace(' / ', '-').replace(' ', '-')
+    return {'__typename': 'CheckRun', 'name': name, 'isRequired': req, 'status': 'IN_PROGRESS' if concl is None else 'COMPLETED',
+            'conclusion': concl, 'detailsUrl': f"https://github.com/{kv['o']}/{kv['r']}/actions/runs/1{kv['n']}04/job/{zlib.crc32(name.encode())}",
+            'startedAt': '2026-10-10T10:00:00Z', 'checkSuite': {'app': {'slug': 'github-actions'}, 'workflowRun': {'event': 'pull_request', 'workflow': {'name': 'ci'}}}}
+pr = {'number': int(kv['n']), 'title': s['title'], 'state': s.get('state', 'OPEN'), 'isDraft': s.get('draft', False),
+      'mergeable': s.get('mergeable', 'MERGEABLE'), 'mergeStateStatus': s['merge'], 'reviewDecision': s.get('review'),
+      'commits': {'nodes': [{'commit': {'statusCheckRollup': {'contexts': {'nodes': [run(c) for c in s['checks']]}}}}]}}
+print(json.dumps({'data': {'repository': {'pullRequest': pr}}}))

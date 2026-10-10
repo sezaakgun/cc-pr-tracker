@@ -1,0 +1,1 @@
+{"title": "Bump Node to 22 in CI", "merge": "BEHIND", "review": "REVIEW_REQUIRED", "checks": [["lint", "pass"], ["typecheck", "pass"], ["unit", "pass"], ["integration-tests", "pass"], ["migrations", "pass"], ["build", "pass"], ["docker image", "pass"], ["openapi diff", "pass"], ["security scan", "pass"], ["coverage", "pass"], ["contract tests", "pass"]]}

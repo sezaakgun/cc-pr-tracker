@@ -6,7 +6,7 @@ Paste a PR URL, or let Claude open one, and it gets one line above the prompt: m
 
 Claude can also ask for a PR's status itself, the list survives restarts, and `/config` controls what alerts, which checks count, and how often PRs are polled. Where no line can be drawn (claude.ai/code on the web, the Claude mobile app), `/prs` prints the PRs and every alert is a line in the transcript.
 
-![Pasting three PR URLs; each becomes a line above the prompt, hovering one shows its buttons, then the details panel opens for it](docs/demo.gif)
+![Pasting three PR URLs; each becomes a line above the prompt, hovering one shows its buttons, then the details panel opens for it and copy URL copies its link](docs/demo.gif)
 
 ![Five watched PRs above the prompt: clean and approved, checks still running, a failing required check, a muted one, and a merged one struck through](docs/overview.png)
 
@@ -86,7 +86,7 @@ The line above the prompt is drawn by the terminal and the Claude Code desktop a
 - the status line under the prompt sums them up, for example `PRs: repo#7 blocked ✗1 · repo#8 clean`
 - `/prs` prints the full list whenever you want it
 
-![A session on claude.ai/code: /prs lists the watched PRs with the failing check's log link, and a later alert is a line in the transcript](docs/web.png)
+![/prs listing the watched PRs with each failing or pending check's log link, a later alert as a transcript line, and the PRs summed up in the status line. Shown in a terminal with Show PRs in the transcript set to always; on the web the line above the prompt is not drawn](docs/web.png)
 
 The toast and the note to Claude work as everywhere else. **Show PRs in the transcript** in `/config` turns this on everywhere (`always`) or off (`never`).
 
@@ -120,7 +120,7 @@ Every poll is compared with the previous one. A required check changing bucket (
 
 Open `/config`; the rows are under cc-pr-tracker. Each also takes `/config cc-pr-tracker.<field>=<value>`. A change applies at once, without a restart.
 
-![The cc-pr-tracker rows in /config, with the Mute all row's help text counting the watched PRs](docs/config.png)
+![The twelve cc-pr-tracker rows in /config, found by typing cc-pr in its search box](docs/config.png)
 
 | Row | Field | Default | What it does |
 | --- | --- | --- | --- |
