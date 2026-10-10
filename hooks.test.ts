@@ -373,6 +373,90 @@ test('a draft PR says draft', async ($, on) => {
   expect(await texts(await band($, 'terminal'))).toContain(' draft · ')
 })
 
+test('Stop watching merged or closed PRs: a PR that merges leaves the list', { options: { stopWhenDone: true } }, async ($, on) => {
+  const { w, clock } = world(on)
+  await start($)
+  await $.prompt.submit({ text: PR, wait: false })
+  w.response = gql({ state: 'MERGED', mergeStateStatus: 'UNKNOWN' })
+  await clock.advance(60_000)
+  expect(w.toasts).toEqual(['repo#7 merged · stopped watching'])
+  expect(await status($)).toContain('No PRs are watched')
+})
+
+test('a merged PR keeps its line by default', async ($, on) => {
+  const { w, clock } = world(on)
+  await start($)
+  await $.prompt.submit({ text: PR, wait: false })
+  w.response = gql({ state: 'MERGED', mergeStateStatus: 'UNKNOWN' })
+  await clock.advance(60_000)
+  expect(await status($)).toContain('state merged')
+})
+
+test('turning Stop watching merged or closed PRs on drops the ones already done', async ($, on) => {
+  const { w } = world(on)
+  w.response = gql({ state: 'CLOSED', mergeStateStatus: 'UNKNOWN' })
+  await start($)
+  await $.prompt.submit({ text: PR, wait: false })
+  expect(await status($)).toContain('state closed')
+  await $.config.set({ key: 'cc-pr-tracker.stopWhenDone', value: true } as any)
+  expect(await status($)).toContain('No PRs are watched')
+})
+
+test('Count all checks: an optional check failing counts and alerts', { options: { allChecks: true } }, async ($, on) => {
+  const { w, clock } = world(on)
+  w.response = gql({}, [run('lint', 'SUCCESS'), run('docs', null, false)])
+  await start($)
+  await $.prompt.submit({ text: PR, wait: false })
+  w.response = gql({}, [run('lint', 'SUCCESS'), run('docs', 'FAILURE', false)])
+  await clock.advance(60_000)
+  expect(w.toasts).toEqual(['repo#7 docs: pending → fail'])
+  const shown = await texts(await band($, 'terminal'))
+  expect(shown).toContain('✓1')
+  expect(shown).toContain('✗1')
+  expect(shown).not.toContain('optional ✗')
+  expect(await status($)).toContain('optional checks (1):\n    fail docs')
+})
+
+test('by default an optional check failing does not alert', async ($, on) => {
+  const { w, clock } = world(on)
+  w.response = gql({}, [run('lint', 'SUCCESS'), run('docs', null, false)])
+  await start($)
+  await $.prompt.submit({ text: PR, wait: false })
+  w.response = gql({}, [run('lint', 'SUCCESS'), run('docs', 'FAILURE', false)])
+  await clock.advance(60_000)
+  expect(w.toasts).toEqual([])
+  expect(await texts(await band($, 'terminal'))).toContain('(+1 optional ✗)')
+})
+
+test('Alert on review changes: an approval alerts, even under "failures only"', { options: { alertOnReview: true, alertOn: 'failures only' } }, async ($, on) => {
+  const { w, clock } = world(on)
+  await start($)
+  await $.prompt.submit({ text: PR, wait: false })
+  w.response = gql({ reviewDecision: 'APPROVED' })
+  await clock.advance(60_000)
+  expect(w.toasts).toEqual(['repo#7 review: review required → approved'])
+})
+
+test('a review change does not alert by default', async ($, on) => {
+  const { w, clock } = world(on)
+  await start($)
+  await $.prompt.submit({ text: PR, wait: false })
+  w.response = gql({ reviewDecision: 'APPROVED' })
+  await clock.advance(60_000)
+  expect(w.toasts).toEqual([])
+})
+
+test('Flash strip off: an alert toasts without the strip', { options: { flash: false } }, async ($, on) => {
+  const { w, clock } = world(on)
+  await start($)
+  await $.prompt.submit({ text: PR, wait: false })
+  const ui = await band($, 'terminal')
+  w.response = gql({}, [run('lint', 'FAILURE')])
+  await clock.advance(60_000)
+  expect(w.toasts.length).toBe(1)
+  expect(await texts(ui)).not.toContain('PR checks changed')
+})
+
 // ---- what is drawn, on each surface that draws the band and panes
 
 const SURFACES = ['terminal', 'desktop'] as const

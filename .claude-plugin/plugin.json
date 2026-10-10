@@ -1,6 +1,6 @@
 {
   "name": "cc-pr-tracker",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Watch GitHub PRs from a Claude Code session: merge state, review and required checks above the prompt, with alerts when they change",
   "author": {
     "name": "Seza Akgün"
@@ -72,6 +72,30 @@
         "this project"
       ],
       "default": "this session"
+    },
+    "stopWhenDone": {
+      "type": "boolean",
+      "title": "Stop watching merged or closed PRs",
+      "description": "A watched PR's line goes away once it is merged or closed, with a toast saying so. Turning this on drops the ones already done.",
+      "default": false
+    },
+    "allChecks": {
+      "type": "boolean",
+      "title": "Count all checks",
+      "description": "The line counts, and alerts on, every check on the PR instead of only the required ones; the details panel lists them all.",
+      "default": false
+    },
+    "alertOnReview": {
+      "type": "boolean",
+      "title": "Alert on review changes",
+      "description": "A change in the review decision (for example review required → approved, or changes requested) alerts too, whatever Alert on is set to.",
+      "default": false
+    },
+    "flash": {
+      "type": "boolean",
+      "title": "Flash strip",
+      "description": "Show the one-second strip above the prompt on an alert. The toast, sound and cmux notification stay either way.",
+      "default": true
     }
   }
 }

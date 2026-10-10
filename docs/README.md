@@ -24,7 +24,8 @@ replaces or adds the file of that name; the README already points at every name.
   and the PR's line filled in above the prompt.
 - **overview.png** (re-record). Five lines above the prompt, in this order: clean and approved; approved with checks
   still running (`●N`); `blocked` with a failing required check (`✗1`); any open PR muted from its `mute` button
-  (ends in `· muted`); a merged PR (struck through, `merged` in magenta).
+  (ends in `· muted`); a merged PR (struck through, `merged` in magenta). Default `/config`, so **Stop watching merged or
+  closed PRs** is off and the merged line stays.
 - **hover.png** (new). The same five lines with the mouse over the third: `open copy mute details ×` at its end.
   Crop nothing; the other lines show no buttons, which is the point.
 - **details.png** (re-record). The details panel open for the failing PR: title, `open · merge blocked (mergeable)
@@ -36,5 +37,5 @@ replaces or adds the file of that name; the README already points at every name.
   the frame from the recording.
 - **pr-status.png** (new). Ask Claude "why is vscode#335895 red?" on the session above. The frame shows the
   `pr_status` tool call and Claude's answer naming the failing check with its log link.
-- **config.png** (new). `/config` scrolled to the cc-pr-tracker rows, all seven visible, with the cursor on
+- **config.png** (new). `/config` scrolled to the cc-pr-tracker rows, all eleven visible (scroll if they do not fit), with the cursor on
   **Mute all PR alerts** so its help text shows `Now watching 5 PRs, 1 muted one by one.`
