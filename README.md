@@ -6,11 +6,11 @@ Paste a PR URL, or let Claude open one, and it gets one line above the prompt: m
 
 Claude can also ask for a PR's status itself, the list survives restarts, and `/config` controls what alerts, which checks count, and how often PRs are polled. Where no line can be drawn (claude.ai/code on the web, the Claude mobile app), `/prs` prints the PRs and every alert is a line in the transcript.
 
-![Pasting three PR URLs; each becomes a line above the prompt, then the details panel opens for one of them](docs/demo.gif)
+![Pasting three PR URLs; each becomes a line above the prompt, hovering one shows its buttons, then the details panel opens for it and copy URL copies its link](docs/demo.gif)
 
-![Three watched PRs above the prompt: one clean and approved, one approved with checks still running, one with a failing required check](docs/overview.png)
+![Five watched PRs above the prompt: clean and approved, checks still running, a failing required check, a muted one, and a merged one struck through](docs/overview.png)
 
-One PR is always one line; the details panel names the checks. [Reading the line](#reading-the-line) explains each part.
+One PR is always one line; hovering it shows its buttons and the details panel names the checks. [Reading the line](#reading-the-line) explains each part.
 
 The plugin is a [Claude Code mod](https://code.claude.com/docs/en/plugins/mods/overview): a plugin whose TypeScript hooks run inside Claude Code's own process, instead of shell-command hooks. Mods are on by default from Claude Code 2.1.287.
 
@@ -56,12 +56,19 @@ On Claude Code 2.1.289 or later the list comes back when you resume a session, C
 
 - **Watch a PR**: paste its URL as the whole prompt, several at once if you like. Or mention URLs in a normal prompt: the prompt runs as usual and the PRs are watched too.
 - **Watch a PR Claude creates or talks about**: nothing to do. Any open PR whose URL appears in Claude's answer is watched, and so is the URL `gh pr create` prints when it runs through the Bash tool. Subagent answers are not scanned.
+- **Use the line's buttons**: hover a line and five buttons appear at its end: `open`, `copy`, `mute` (or `unmute`), `details` and `×`. They need a terminal that reports the mouse.
+
+  ![Hovering a PR's line shows its open, copy, mute, details and × buttons](docs/hover.png)
+
 - **Open a PR**: Cmd+click its `repo#number` (needs a terminal that renders hyperlinks), or hover the line and press `open`.
 - **Copy a PR's URL**: hover the line and press `copy`, or press `copy URL` in the details panel. Over SSH the terminal's clipboard is reached through OSC 52.
-- **Ask Claude about a PR**: Claude has a `pr_status` tool that polls the PR when called and answers with every required check and its log link, so "why is my PR red?" needs no `gh` call.
-- **See every check**: hover the line and press `details`. A side panel lists every required check and every failing optional one, linked to its run when the run has an https link.
+- **Ask Claude about a PR**: Claude has a `pr_status` tool for the PRs you watch. It polls them when called and answers with the state, merge state, review decision, every required check with its log link and any failing optional check (every optional one with **Count all checks** on), so "why is my PR red?" needs no `gh` call. Claude passes a URL or `owner/repo#number` for one PR, or nothing for all of them; a PR that is not watched gets the list of those that are.
 
-  ![The details panel open beside the session, listing every required check with the failing one marked](docs/details.png)
+  ![Asking why a PR is red: Claude calls pr_status and names the failing check with its log link](docs/pr-status.png)
+
+- **See every check**: hover the line and press `details`. A side panel shows the title, the state, merge state and review, three buttons (`open in browser`, `copy URL`, `stop watching`), then every required check and every failing optional one (every optional one with **Count all checks** on), linked to its run when the run has an https link. Its last line counts the optional checks and says when the PR was last polled.
+
+  ![The details panel open beside the session: title, state, the open in browser, copy URL and stop watching buttons, and every required check with the failing one marked](docs/details.png)
 
 - **Silence a PR**: hover the line and press `mute`. The line keeps updating but that PR no longer toasts, flashes, plays a sound, notifies cmux or tells Claude; the line ends in `· muted`. Press `unmute` to turn alerts back on.
 - **Silence every PR**: open `/config` and turn on **Mute all PR alerts**. It applies at once, is saved across sessions, and every line ends in `· muted` while it is on. Turn it off to get alerts back; PRs you muted one by one stay muted.
@@ -79,6 +86,8 @@ The line above the prompt is drawn by the terminal and the Claude Code desktop a
 - the status line under the prompt sums them up, for example `PRs: repo#7 blocked ✗1 · repo#8 clean`
 - `/prs` prints the full list whenever you want it
 
+![/prs listing the watched PRs with each failing or pending check's log link, a later alert as a transcript line, and the PRs summed up in the status line. Shown in a terminal with Show PRs in the transcript set to always; on the web the line above the prompt is not drawn](docs/web.png)
+
 The toast and the note to Claude work as everywhere else. **Show PRs in the transcript** in `/config` turns this on everywhere (`always`) or off (`never`).
 
 The list is kept with the session. Resuming it (`claude --resume`, `--continue`) watches the same PRs again, minus any merged or closed since; a new session starts empty. Set **Remember watched PRs** to `this project` to have every new session in the directory pick the list up instead. `/clear` drops the PRs Claude brought in and keeps the ones you pasted.
@@ -89,7 +98,9 @@ The list is kept with the session. Resuming it (`claude --resume`, `--continue`)
 - **Merge state** is GitHub's own value, lowercased. Green (`clean`, `has_hooks`) means mergeable now. Yellow (`behind`, `unstable`) means update the branch or an optional check failed. Red (`blocked`, `dirty`) means a required check or review is missing, or there are conflicts. Gray (`draft`, `unknown`) needs no action; `unknown` usually resolves on the next poll.
 - **Review decision** is `approved` in green, `changes requested` in red, `review required` in yellow, or `no review` in gray when the repo has no review rules.
 - **Checks** count only the required ones: `✓N` passed, `✗N` failed or cancelled, `●N` pending. Skipped checks are not counted and show as `○` only in the details panel. Failing optional checks are summarised as `(+N optional ✗)` and listed there too. With **Count all checks** on, the counts cover every check, so there is no optional summary, and the details panel lists every optional check.
-- **`· refresh failed`** in red at the end means the last poll errored and the line shows the previous values.
+- **`· refresh failed`** in red means the last poll errored and the line shows the previous values.
+- **`· muted`**, dimmed, means the PR does not alert, because you muted it or **Mute all PR alerts** is on.
+- **Title** comes last, so it is what a narrow terminal cuts.
 
 ## Alerts
 
@@ -101,11 +112,15 @@ Every poll is compared with the previous one. A required check changing bucket (
 - inside cmux: a flash of the session's own pane and a notification that marks its workspace unread, so the change reaches you from another workspace
 - a note in the conversation that you do not see but Claude reads on its next turn, marked as an automated notice with GitHub's text quoted, for example `[cc-pr-tracker: automated status notice, …] org/my-service#42 (…) changed: "lint: pending → fail". Newly failing required checks: "lint" https://…`
 
+![A failing check: the white strip above the prompt reads ● PR checks changed and the toast names the check and its change](docs/alert.png)
+
 **Alert on**, **Alert sound**, **Flash strip** and **Tell Claude about changes** in `/config` (see Settings) narrow this. A muted PR gets none of these, the note included. Two things never alert: the first load of a PR, and a move into or out of GitHub's temporary `unknown` merge state.
 
 ## Settings
 
-Open `/config`; the rows are under cc-pr-tracker. Each also takes `/config cc-pr-tracker.<field>=<value>`.
+Open `/config`; the rows are under cc-pr-tracker. Each also takes `/config cc-pr-tracker.<field>=<value>`. A change applies at once, without a restart.
+
+![The twelve cc-pr-tracker rows in /config, found by typing cc-pr in its search box](docs/config.png)
 
 | Row | Field | Default | What it does |
 | --- | --- | --- | --- |
