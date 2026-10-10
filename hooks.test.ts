@@ -22,7 +22,7 @@ const gql = (pr: Record<string, unknown> = {}, checks = [run('lint', null)]) => 
 // the engine beneath the plugin; `w` records what the plugin did and `w.response` is what gh prints
 // `old`: a build before 2.1.289, where $.session.root and $.ui.copy answer nothing
 function world(on: any, store: Record<string, unknown> = {}, { old = false } = {}) {
-  const w = { gh: 0, toasts: [] as string[], response: gql(), logs: [] as string[], opened: [] as string[], copied: [] as { text: string; surface?: string }[], copyResult: { isCopied: true } as Record<string, unknown>, ghError: '', bashStdout: '', notes: [] as string[], runs: [] as string[][], hold: undefined as Promise<void> | undefined, state: undefined as unknown, sessionId: 's1', respond: (argv: string[]) => w.response }
+  const w = { gh: 0, toasts: [] as string[], response: gql(), logs: [] as string[], opened: [] as string[], copied: [] as { text: string; surface?: string }[], copyResult: { isCopied: true } as Record<string, unknown>, ghError: '', bashStdout: '', runs: [] as string[][], notes: [] as string[], surfaces: ['terminal'] as string[], status: [] as (string | undefined)[], hold: undefined as Promise<void> | undefined, state: undefined as unknown, sessionId: 's1', respond: (argv: string[]) => w.response, refuse: (_argv: string[]) => '' }
   const clock = mock.clock(on)
   // $.store over `store` itself, so a test reads what the plugin wrote
   on('store.get', async (_$: unknown, e: any) => ({ value: store[e.key] }))
@@ -44,6 +44,9 @@ function world(on: any, store: Record<string, unknown> = {}, { old = false } = {
     on('session.id', async () => ({ value: w.sessionId }))
     on('state.get', async () => ({ value: { value: w.state, version: 0 } }))
     on('state.set', async (_$: unknown, e: any) => { w.state = e.value; return { value: { isSet: true, version: 1 } } })
+    on('session.surfaces', async () => ({ value: w.surfaces }))
+    on('ui.status', async (_$: unknown, e: any) => { w.status.push(e.text); return { value: undefined } })
+    on('command.register', async (_$: unknown, e: any) => ({ value: { command: e.name } }))
   }
   // a build that hands $.session.append to the test records the note here; 2.1.289 does not, and
   // the call fails beneath the plugin and is logged
@@ -54,7 +57,8 @@ function world(on: any, store: Record<string, unknown> = {}, { old = false } = {
     if (e.argv[0] !== 'gh') return { value: { stdout: '', stderr: '', exitCode: 0 } }
     if (w.hold) await w.hold
     w.gh++
-    return { value: w.ghError ? { stdout: '', stderr: w.ghError, exitCode: 1 } : { stdout: w.respond(e.argv), stderr: '', exitCode: 0 } }
+    const error = w.ghError || w.refuse(e.argv)
+    return { value: error ? { stdout: '', stderr: error, exitCode: 1 } : { stdout: w.respond(e.argv), stderr: '', exitCode: 0 } }
   })
   on('ui.close', ok())
   on('ui.open', async (_$: unknown, e: any) => { w.opened.push(e.id); return { value: undefined } })
@@ -89,6 +93,9 @@ test('a required check failing alerts and tells Claude, with the log link', asyn
   // the note itself: claude plugin test on 2.1.289 never hands $.session.append to a test's hook, so
   // there the call fails beneath the plugin and is logged; its text is changeNote's, tested in register.test.ts
   expect(w.notes.some(n => n.includes('"lint" https://ci.example.com/lint')) || w.logs.some(l => l.includes('$.session.append'))).toBe(true)
+  // a terminal draws the band, so the transcript and the status line stay clear
+  expect(w.logs.filter(l => l.includes('repo#7'))).toEqual([])
+  expect(w.status.filter(Boolean)).toEqual([])
 })
 
 test('Tell Claude about changes off: the toast stays, the note goes', { options: { notifyClaude: false } }, async ($, on) => {
@@ -98,6 +105,7 @@ test('Tell Claude about changes off: the toast stays, the note goes', { options:
   w.response = gql({}, [run('lint', 'FAILURE')])
   await clock.advance(60_000)
   expect(w.toasts.length).toBe(1)
+  expect(w.notes).toEqual([])
   expect(w.logs.some(l => l.includes('$.session.append'))).toBe(false)
   expect(w.notes).toEqual([])
 })
@@ -319,7 +327,8 @@ test('on a build before 2.1.289 it watches and alerts as before, in memory', asy
   expect(missing.length).toBe(new Set(missing.map(l => l.split(' unavailable')[0])).size)
   // ($.state is the test engine's own, so it never goes missing here; newer test engines answer
   // $.session.append themselves, so it goes missing only on some)
-  expect(missing.map(l => l.split(' unavailable')[0]).filter(name => !name.endsWith('$.session.append'))).toEqual(['cc-pr-tracker: $.session.id', 'cc-pr-tracker: $.ui.copy'])
+  // (/prs and the surfaces are missing too: such a build draws the band and nothing else)
+  expect(missing.map(l => l.split(' unavailable')[0]).filter(name => !name.endsWith('$.session.append')).sort()).toEqual(['cc-pr-tracker: $.command.register', 'cc-pr-tracker: $.session.id', 'cc-pr-tracker: $.session.surfaces', 'cc-pr-tracker: $.ui.copy'])
 })
 
 test('a PR URL inside a normal prompt is watched and the prompt still runs', async ($, on) => {
@@ -455,6 +464,97 @@ test('Flash strip off: an alert toasts without the strip', { options: { flash: f
   await clock.advance(60_000)
   expect(w.toasts.length).toBe(1)
   expect(await texts(ui)).not.toContain('PR checks changed')
+})
+
+// ---- where no band is drawn: claude.ai/code on the web, the mobile app
+
+const prs = async ($: any, args = '') => ((await $.command.run({ command: 'prs', args })) as any).text as string
+
+test('/prs prints each PR with its failing and pending checks, and toggles the URLs given', async ($, on) => {
+  const { w } = world(on)
+  w.response = gql({}, [run('lint', 'FAILURE'), run('e2e', null), run('unit', 'SUCCESS'), run('docs', 'FAILURE', false)])
+  await start($)
+  expect(await prs($)).toBe('No PRs are watched. Paste a PR URL as the whole prompt, or run /prs <PR URL>.')
+  const text = await prs($, PR)
+  expect(text).toBe([
+    'watching org/repo#7',
+    'repo#7 · blocked · review required · ✓1 ✗1 ●1 (+1 optional ✗) · Fix it',
+    `  ${PR}`,
+    '  ✗ lint https://ci.example.com/lint',
+    '  ● e2e https://ci.example.com/e2e',
+    '  ✗ docs (optional) https://ci.example.com/docs',
+  ].join('\n'))
+  expect((await prs($, PR)).split('\n')[0]).toBe('stopped watching org/repo#7')
+  expect(await status($)).toContain('No PRs are watched')
+})
+
+test('mobile: each PR\'s first status and every alert are transcript lines, summed up in the status line', async ($, on) => {
+  const { w, clock } = world(on)
+  w.surfaces = ['mobile']
+  await start($)
+  await $.prompt.submit({ text: PR, wait: false })
+  await status($)
+  expect(w.logs).toContain('repo#7 · blocked · review required · ✓0 ●1 · Fix it')
+  expect(w.status.at(-1)).toBe('PRs: repo#7 blocked ●1')
+  w.response = gql({}, [run('lint', 'FAILURE')])
+  await clock.advance(60_000)
+  expect(w.logs).toContain('repo#7 lint: pending → fail · ✗ lint https://ci.example.com/lint')
+  expect(w.status.at(-1)).toBe('PRs: repo#7 blocked ✗1')
+  await prs($, PR)
+  expect(w.status.at(-1)).toBeUndefined()
+})
+
+test('desktop: the transcript lines stop once the band is drawn there', async ($, on) => {
+  const { w, clock } = world(on)
+  w.surfaces = ['desktop']
+  await start($)
+  await $.prompt.submit({ text: PR, wait: false })
+  await status($)
+  expect(w.status.at(-1)).toBe('PRs: repo#7 blocked ●1')
+  await band($, 'desktop')
+  expect(w.status.at(-1)).toBeUndefined()
+  w.response = gql({}, [run('lint', 'FAILURE')])
+  await clock.advance(60_000)
+  expect(w.logs.filter(l => l.includes('lint: pending → fail'))).toEqual([])
+})
+
+test('Show PRs in the transcript "never": a phone gets no lines', { options: { transcript: 'never' } }, async ($, on) => {
+  const { w } = world(on)
+  w.surfaces = ['mobile']
+  await start($)
+  await $.prompt.submit({ text: PR, wait: false })
+  await status($)
+  expect(w.logs.filter(l => l.includes('repo#7'))).toEqual([])
+  expect(w.status.filter(Boolean)).toEqual([])
+})
+
+test('GitHub refusing GraphQL: polls go over REST, required checks from the branch protection', async ($, on) => {
+  const { w } = world(on)
+  const REST: Record<string, unknown> = {
+    'repos/org/repo/pulls/7': { number: 7, title: 'Fix it', state: 'open', draft: false, merged_at: null, mergeable: true, mergeable_state: 'blocked', base: { ref: 'main' }, head: { sha: 'abc' }, requested_reviewers: [], requested_teams: [] },
+    'repos/org/repo/commits/abc/check-runs?per_page=100': { check_runs: [
+      { name: 'lint', status: 'completed', conclusion: 'failure', details_url: 'https://ci.example.com/lint', started_at: '2026-10-05T10:00:00Z', app: { slug: 'github-actions' } },
+      { name: 'docs', status: 'in_progress', conclusion: null, html_url: 'https://github.com/org/repo/runs/2', started_at: '2026-10-05T10:00:00Z', app: { slug: 'github-actions' } },
+    ] },
+    'repos/org/repo/commits/abc/status?per_page=100': { statuses: [{ context: 'ci/legacy', state: 'success', target_url: 'https://ci.example.com/legacy', created_at: '2026-10-05T10:00:00Z' }] },
+    'repos/org/repo/pulls/7/reviews?per_page=100': [{ state: 'CHANGES_REQUESTED', user: { login: 'a' } }, { state: 'APPROVED', user: { login: 'a' } }],
+    'repos/org/repo/branches/main': { protection: { required_status_checks: { contexts: ['ci/legacy'], checks: [] } } },
+    'repos/org/repo/rules/branches/main': [{ type: 'required_status_checks', parameters: { required_status_checks: [{ context: 'lint' }] } }],
+  }
+  w.refuse = argv => argv[2] === 'graphql' ? 'gh: GitHub GraphQL is not available from Claude Code sessions; use the REST API (HTTP 403)' : ''
+  w.respond = argv => JSON.stringify(REST[argv[2]])
+  await start($)
+  await $.prompt.submit({ text: PR, wait: false })
+  const text = await status($)
+  expect(text).toContain('merge blocked (mergeable) · approved')
+  expect(text).toContain('required checks (2):')
+  expect(text).toContain('fail lint https://ci.example.com/lint')
+  expect(text).toContain('pass ci/legacy https://ci.example.com/legacy')
+  expect(text).toContain('1 optional checks in all')
+  expect(w.logs).toContain('GitHub refused GraphQL; polling over the REST API from now on')
+  // GraphQL is asked once, then never again
+  await status($)
+  expect(w.runs.filter(argv => argv[2] === 'graphql').length).toBe(1)
 })
 
 // ---- what is drawn, on each surface that draws the band and panes

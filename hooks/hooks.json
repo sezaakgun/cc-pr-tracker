@@ -1,5 +1,5 @@
 {
-  "description": "cc-pr-tracker: watches GitHub PRs above the prompt. A mod: loads by default on Claude Code 2.1.287 and later; earlier builds need CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1.",
+  "description": "cc-pr-tracker: watches GitHub PRs above the prompt, or in the transcript and /prs where no band is drawn. A mod: loads by default on Claude Code 2.1.287 and later; earlier builds need CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1.",
   "modules": [
     "./register.tsx"
   ]
