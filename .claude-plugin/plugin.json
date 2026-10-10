@@ -1,6 +1,6 @@
 {
   "name": "cc-pr-tracker",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Watch GitHub PRs from a Claude Code session: merge state, review and required checks above the prompt, with alerts when they change",
   "author": {
     "name": "Seza Akgün"
@@ -96,6 +96,17 @@
       "title": "Flash strip",
       "description": "Show the one-second strip above the prompt on an alert. The toast, sound and cmux notification stay either way.",
       "default": true
+    },
+    "transcript": {
+      "type": "string",
+      "title": "Show PRs in the transcript",
+      "description": "Where no band is drawn (claude.ai/code on the web, the Claude mobile app), each PR's first status and every alert is a line in the transcript and the PRs are summed up in the status line. /prs prints them on any surface.",
+      "options": [
+        "when no band is drawn",
+        "always",
+        "never"
+      ],
+      "default": "when no band is drawn"
     }
   }
 }

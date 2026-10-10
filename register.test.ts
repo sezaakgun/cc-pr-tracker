@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { DEFAULTS, ONLY_URLS, changeNote, latestPerName, linkable, pollMs, prChanges, readCfg, shouldAlert, statusText, toCheck, toChecks } from './hooks/register.tsx'
+import { DEFAULTS, ONLY_URLS, changeNote, fromRest, latestPerName, lineOf, linkable, pollMs, prChanges, readCfg, requiredOf, reviewDecisionOf, shouldAlert, statusLine, statusText, toCheck, toChecks } from './hooks/register.tsx'
 
 const check = (name: string, bucket: string) => ({ key: name, name, bucket, link: '' })
 
@@ -177,4 +177,43 @@ test('prChanges with review decisions', () => {
   expect(prChanges('BLOCKED', prev, 'BLOCKED', lint, 'APPROVED', 'APPROVED')).toEqual([])
   // not compared unless both are passed
   expect(prChanges('BLOCKED', prev, 'BLOCKED', lint)).toEqual([])
+})
+
+// what REST says, laid out as the GraphQL query would have said it
+test('fromRest', () => {
+  const pull = { number: 7, title: 'Fix it', state: 'closed', draft: false, merged_at: '2026-10-05T10:00:00Z', mergeable: null, mergeable_state: 'unknown' }
+  const found = fromRest(pull, [{ name: 'lint', status: 'completed', conclusion: 'action_required', html_url: 'https://github.com/r/1', app: { slug: 'github-actions' } }], [{ context: 'ci/x', state: 'error' }], [], new Set(['lint']))
+  expect([found.state, found.mergeable, found.mergeStateStatus, found.reviewDecision]).toEqual(['MERGED', 'UNKNOWN', 'UNKNOWN', ''])
+  const [run, status] = found.commits.nodes[0].commit.statusCheckRollup.contexts.nodes
+  expect(toCheck(run)).toEqual({ key: 'CheckRun\u0000github-actions\u0000\u0000\u0000lint', name: 'lint', bucket: 'fail', link: 'https://github.com/r/1' })
+  expect([run.isRequired, status.isRequired, toCheck(status).bucket]).toEqual([true, false, 'fail'])
+  expect(fromRest({ ...pull, state: 'open', merged_at: null, mergeable: false, mergeable_state: 'dirty' }, [], [], [], new Set()).mergeable).toBe('CONFLICTING')
+})
+
+test('requiredOf', () => {
+  expect([...requiredOf(undefined, undefined)]).toEqual([])
+  expect([...requiredOf({ protection: { required_status_checks: { contexts: ['a'], checks: [{ context: 'b' }] } } }, [{ type: 'deletion' }, { type: 'required_status_checks', parameters: { required_status_checks: [{ context: 'c' }] } }])]).toEqual(['a', 'b', 'c'])
+})
+
+test('reviewDecisionOf', () => {
+  const pull = { number: 1, title: '', state: 'open' }
+  const review = (login: string, state: string) => ({ state, user: { login } })
+  expect(reviewDecisionOf([], pull)).toBe('')
+  expect(reviewDecisionOf([], { ...pull, requested_reviewers: [{}] })).toBe('REVIEW_REQUIRED')
+  expect(reviewDecisionOf([review('a', 'APPROVED'), review('b', 'COMMENTED')], pull)).toBe('APPROVED')
+  // each reviewer's latest review counts; a dismissal clears it
+  expect(reviewDecisionOf([review('a', 'CHANGES_REQUESTED'), review('a', 'APPROVED')], pull)).toBe('APPROVED')
+  expect(reviewDecisionOf([review('a', 'APPROVED'), review('b', 'CHANGES_REQUESTED')], pull)).toBe('CHANGES_REQUESTED')
+  expect(reviewDecisionOf([review('a', 'APPROVED'), review('a', 'DISMISSED')], pull)).toBe('')
+})
+
+test('lineOf and statusLine', () => {
+  const view = { number: 7, title: 'Fix it', state: 'OPEN', isDraft: true, mergeable: 'MERGEABLE', mergeStateStatus: 'DRAFT', reviewDecision: '' }
+  const pr = { url: 'https://github.com/o/r/pull/7', id: 'o/r#7', label: 'r#7', pane: 'p', view, required: [check('a', 'pass'), check('b', 'cancel'), check('c', 'pending')], others: [check('d', 'fail')] }
+  expect(lineOf(pr)).toBe('r#7 draft · draft · no review · ✓1 ✗1 ●1 (+1 optional ✗) · Fix it')
+  expect(lineOf(pr, true)).toBe('r#7 draft · draft · no review · ✓1 ✗1 ●1 (+1 optional ✗) · muted · Fix it')
+  expect(lineOf({ ...pr, view: { ...view, state: 'MERGED' } })).toBe('r#7 merged · Fix it')
+  expect(lineOf({ ...pr, view: undefined, error: 'HTTP 401' })).toBe('r#7 gh failed: HTTP 401')
+  expect(statusLine([])).toBeUndefined()
+  expect(statusLine([pr, { ...pr, label: 'r#8', view: undefined }])).toBe('PRs: r#7 draft ✗1 ●1 · r#8 loading…')
 })
