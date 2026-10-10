@@ -4,7 +4,7 @@ Watch GitHub pull requests without leaving your Claude Code session.
 
 Paste a PR URL, or let Claude open one, and it gets one line above the prompt: merge state, review decision and required checks, refreshed every minute by default. When a check flips or the merge state moves you get a toast, a one-second flash and a sound, and Claude gets a note with the failing check's log link. You keep working; the PR tells you when it needs you.
 
-Claude can also ask for a PR's status itself, the list survives restarts, and `/config` controls what alerts, which checks count, and how often PRs are polled.
+Claude can also ask for a PR's status itself, the list survives restarts, and `/config` controls what alerts, which checks count, and how often PRs are polled. Where no line can be drawn (claude.ai/code on the web, the Claude mobile app), `/prs` prints the PRs and every alert is a line in the transcript.
 
 ![Pasting three PR URLs; each becomes a line above the prompt, hovering one shows its buttons, then the details panel opens for it](docs/demo.gif)
 
@@ -17,7 +17,7 @@ The plugin is a [Claude Code mod](https://code.claude.com/docs/en/plugins/mods/o
 ## Requirements
 
 - Claude Code 2.1.289 or later for everything (`claude --version`; mods load by default from 2.1.287). Older builds still watch and alert, but keep the list in memory only, send Claude no note and cannot copy. Before 2.1.287, function hooks were in early access and load only with `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` set; 2.1.287 and later ignore that variable, so remove it if you set it.
-- [GitHub CLI](https://cli.github.com) (`gh`), logged in with access to the repos you watch. Check with `gh auth status`.
+- [GitHub CLI](https://cli.github.com) (`gh`), logged in with access to the repos you watch. Check with `gh auth status`. In a claude.ai/code cloud session `gh` comes set up for the repos the session was given, and since that session refuses GraphQL, polls go over the REST API there (see [How it works](#how-it-works)).
 - Optional: macOS for sounds (`afplay` with the system sounds) and `open`. On Linux, `xdg-open` is tried when `open` is absent, and there is no sound.
 - Optional: [cmux](https://cmux.com) for pane flashes and workspace notifications. Outside cmux an alert is the toast, the strip, the sound and the note to Claude.
 
@@ -73,8 +73,20 @@ On Claude Code 2.1.289 or later the list comes back when you resume a session, C
 - **Silence a PR**: hover the line and press `mute`. The line keeps updating but that PR no longer toasts, flashes, plays a sound, notifies cmux or tells Claude; the line ends in `· muted`. Press `unmute` to turn alerts back on.
 - **Silence every PR**: open `/config` and turn on **Mute all PR alerts**. It applies at once, is saved across sessions, and every line ends in `· muted` while it is on. Turn it off to get alerts back; PRs you muted one by one stay muted.
 - **Stop watching**: hover the line and press `×`, or paste the same URL again as the whole prompt. A paste of several URLs toggles each one; a URL inside a normal prompt never stops anything.
+- **Print the PRs in the transcript**: run `/prs`. Each PR gets its line, its URL and every required check that is not passing, with its log link; failing optional checks are listed too. `/prs <PR URL>…` starts or stops watching those PRs first, like a paste. It polls before it answers and runs even while Claude is working.
 
 Several PRs stack, one line each, in the order you added them.
+
+### On the web and on your phone
+
+The line above the prompt is drawn by the terminal and the Claude Code desktop app only. When a session is followed from claude.ai/code in a browser or from the Claude mobile app, and no surface the session draws on has drawn the line, the PRs come to the transcript instead:
+
+- each PR's first status is a transcript line, for example `cc-pr-tracker: repo#7 · blocked · review required · ✓1 ✗1 · Fix it`
+- every alert is a transcript line too, with each newly failing required check's log link
+- the status line under the prompt sums them up, for example `PRs: repo#7 blocked ✗1 · repo#8 clean`
+- `/prs` prints the full list whenever you want it
+
+The toast and the note to Claude work as everywhere else. **Show PRs in the transcript** in `/config` turns this on everywhere (`always`) or off (`never`).
 
 The list is kept with the session. Resuming it (`claude --resume`, `--continue`) watches the same PRs again, minus any merged or closed since; a new session starts empty. Set **Remember watched PRs** to `this project` to have every new session in the directory pick the list up instead. `/clear` drops the PRs Claude brought in and keeps the ones you pasted.
 
@@ -121,11 +133,13 @@ Open `/config`; the rows are under cc-pr-tracker. Each also takes `/config cc-pr
 | Count all checks | `allChecks` | off | The line counts and alerts on every check, not only the required ones; the details panel and `pr_status` list every optional check. |
 | Alert on review changes | `alertOnReview` | off | The review decision moving (for example to `approved` or `changes requested`) alerts too, whatever **Alert on** is set to. |
 | Flash strip | `flash` | on | The one-second `● PR checks changed` strip above the prompt. The toast, sound, cmux pane flash and notification stay. |
+| Show PRs in the transcript | `transcript` | when no band is drawn | `when no band is drawn` (claude.ai/code on the web, the mobile app), `always`, or `never`: each PR's first status and every alert as a transcript line, and a summary in the status line. `/prs` works either way. |
 
 ## Troubleshooting
 
 - **Pasting a URL just sends it to the model.** The mod did not load. Run `/plugin`: the dim `mods active` line should name cc-pr-tracker. If not, check `claude --version` is 2.1.287 or later, the plugin is enabled in the **Installed** tab, the session was not started with `--safe-mode`, and `disableAllHooks` is not `true` in your settings. On a build before 2.1.287, set `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`.
-- **`gh failed: …` on the line.** Run `gh pr view <url>` in a terminal. Usually `gh` is not logged in or has no access to that repo.
+- **`gh failed: …` on the line.** Run `gh pr view <url>` in a terminal. Usually `gh` is not logged in or has no access to that repo. In a claude.ai/code cloud session, `GitHub access to this repository is not enabled for this session` means the repo was not added to the session.
+- **Nothing shows on claude.ai/code or the mobile app.** Run `/prs`. If it answers but no transcript lines appear after a change, check **Show PRs in the transcript** in `/config` is not `never`.
 - **`Required checks: none reported` in details.** The repo has no branch protection with required checks. The line still shows the merge state and review.
 - **No sound.** Only macOS with `/System/Library/Sounds` present plays sounds.
 - **Hover buttons never appear.** Your terminal does not report the mouse. Cmd+click and pasting the URL again still work.
@@ -138,7 +152,9 @@ Open `/config`; the rows are under cc-pr-tracker. Each also takes `/config cc-pr
 - Polling is every 60 seconds by default (`pollSeconds` in `/config`) through `gh`, one GraphQL call per PR per poll.
 - The watch list is stored per session, or per project directory under `remember: this project` (`$.store`); a hot reload keeps the lines as drawn (`$.state`). A session's list not polled for 30 days is deleted.
 - The area above the prompt has a limited number of rows, about half the terminal. Very many PRs will scroll.
-- A headless `claude -p` run never draws. Only interactive terminal sessions show the UI.
+- A headless `claude -p` run never draws; `/prs` still answers there, so `claude -p "/prs <PR URL>"` prints a PR's status.
+- The line, the hover buttons and the details panel are the terminal's and the desktop app's. On the web and the mobile app it is `/prs`, transcript lines and the status line (see [On the web and on your phone](#on-the-web-and-on-your-phone)).
+- Over REST (sessions that refuse GraphQL), a check counts as required when the base branch's protection or rulesets name it; a branch whose protection the token cannot read leaves every check optional. The review decision is read from each reviewer's latest review, so `approved` shows even on a repo with no review rules.
 - A PR created in the browser or from another terminal must be pasted. Claude only auto-watches PRs whose URL appears in its answer or in `gh pr create` output.
 - Merged and closed PRs keep polling until you stop them, unless **Stop watching merged or closed PRs** is on.
 - Only `github.com` URLs are recognised; GitHub Enterprise hosts are not.
@@ -151,7 +167,9 @@ The plugin is one hooks module, `hooks/register.tsx`. It hooks these events:
 - `prompt.submit` reads PR URLs from your prompt and starts or stops watching.
 - `turn.complete` reads PR URLs from Claude's final answer, and `tool.call` on Bash reads the URL `gh pr create` prints.
 - `ui.render` on `AbovePrompt` draws the lines; on `Pane` it draws the details panel.
-- `session.start` reads the settings, restores the list, registers the `pr_status` tool and sets up the timer that polls every watched PR.
+- `session.start` reads the settings, restores the list, registers the `pr_status` tool and the `/prs` command, and sets up the timer that polls every watched PR.
+- `command.run` on `prs` prints the list, toggling any PR URLs given.
+- `session.attach` and `session.detach` re-check whether any surface draws the line, which decides the transcript lines and the status line.
 - `config.set` applies a settings change at once; `config.describe` adds the watched and muted counts to the Mute all row.
 - `tool.call` on `mcp__cc-pr-tracker__pr_status` polls the asked PRs and answers that tool.
 - `session.end` with reason `clear` drops the PRs Claude brought in.
@@ -160,7 +178,7 @@ An alert also calls `$.session.append` to add a user-role note Claude reads but 
 
 The calls that arrived after 2.1.269 (`$.session.root`, `$.state`, `$.session.append`, `$.ui.copy`, the `session.end` event) are each guarded: on an older build the call fails, is logged once, and the plugin carries on in memory as 0.2 did.
 
-Each poll is one read-only GraphQL call through `gh api graphql`: the PR's title, state, merge state and review decision, plus every check on its head commit with GitHub's own `isRequired` flag. Like `gh pr checks`, only the latest run of each check is kept: runs are grouped by app, workflow, event and name, so a re-run replaces the run it superseded while same-named checks from another workflow or event stay separate. The plugin maps check states to the same `pass` / `fail` / `pending` / `cancel` / `skipping` buckets that `gh pr checks` uses. A failed poll keeps the previous values and marks the line `refresh failed`, so a network blip is not reported as a change. Every call has a 30-second timeout.
+Each poll is one read-only GraphQL call through `gh api graphql`: the PR's title, state, merge state and review decision, plus every check on its head commit with GitHub's own `isRequired` flag. Like `gh pr checks`, only the latest run of each check is kept: runs are grouped by app, workflow, event and name, so a re-run replaces the run it superseded while same-named checks from another workflow or event stay separate. The plugin maps check states to the same `pass` / `fail` / `pending` / `cancel` / `skipping` buckets that `gh pr checks` uses. When GitHub refuses GraphQL (a claude.ai/code cloud session says `GraphQL is not available`, or any HTTP 403), the session switches to the REST API for good: the PR, its head commit's check runs and statuses, its reviews, and the base branch's protection and rulesets, four to six calls per PR per poll. A failed poll keeps the previous values and marks the line `refresh failed`, so a network blip is not reported as a change. Every call has a 30-second timeout.
 
 ## Develop
 
