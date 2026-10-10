@@ -22,7 +22,7 @@ const gql = (pr: Record<string, unknown> = {}, checks = [run('lint', null)]) => 
 // the engine beneath the plugin; `w` records what the plugin did and `w.response` is what gh prints
 // `old`: a build before 2.1.289, where $.session.root and $.ui.copy answer nothing
 function world(on: any, store: Record<string, unknown> = {}, { old = false } = {}) {
-  const w = { gh: 0, toasts: [] as string[], response: gql(), logs: [] as string[], opened: [] as string[], copied: [] as { text: string; surface?: string }[], copyResult: { isCopied: true } as Record<string, unknown>, ghError: '', bashStdout: '', runs: [] as string[][], hold: undefined as Promise<void> | undefined, state: undefined as unknown, sessionId: 's1', respond: (argv: string[]) => w.response }
+  const w = { gh: 0, toasts: [] as string[], response: gql(), logs: [] as string[], opened: [] as string[], copied: [] as { text: string; surface?: string }[], copyResult: { isCopied: true } as Record<string, unknown>, ghError: '', bashStdout: '', notes: [] as string[], runs: [] as string[][], hold: undefined as Promise<void> | undefined, state: undefined as unknown, sessionId: 's1', respond: (argv: string[]) => w.response }
   const clock = mock.clock(on)
   // $.store over `store` itself, so a test reads what the plugin wrote
   on('store.get', async (_$: unknown, e: any) => ({ value: store[e.key] }))
@@ -45,6 +45,9 @@ function world(on: any, store: Record<string, unknown> = {}, { old = false } = {
     on('state.get', async () => ({ value: { value: w.state, version: 0 } }))
     on('state.set', async (_$: unknown, e: any) => { w.state = e.value; return { value: { isSet: true, version: 1 } } })
   }
+  // a build that hands $.session.append to the test records the note here; 2.1.289 does not, and
+  // the call fails beneath the plugin and is logged
+  if (!old) on('session.append', async (_$: unknown, e: any, next: any) => { w.notes.push(e.message.content[0].text); return next(e) })
   on('tool.register', ok({ tool: TOOL }))
   on('process.run', async (_$: unknown, e: any) => {
     w.runs.push([...e.argv])
@@ -83,9 +86,9 @@ test('a required check failing alerts and tells Claude, with the log link', asyn
   w.response = gql({}, [run('lint', 'FAILURE')])
   await clock.advance(60_000)
   expect(w.toasts).toEqual(['repo#7 lint: pending → fail'])
-  // the note itself: claude plugin test (2.1.289) never hands $.session.append to a test's hook, so
-  // the call fails beneath the plugin and is logged; its text is changeNote's, tested in register.test.ts
-  expect(w.logs.some(l => l.includes('$.session.append'))).toBe(true)
+  // the note itself: claude plugin test on 2.1.289 never hands $.session.append to a test's hook, so
+  // there the call fails beneath the plugin and is logged; its text is changeNote's, tested in register.test.ts
+  expect(w.notes.some(n => n.includes('"lint" https://ci.example.com/lint')) || w.logs.some(l => l.includes('$.session.append'))).toBe(true)
 })
 
 test('Tell Claude about changes off: the toast stays, the note goes', { options: { notifyClaude: false } }, async ($, on) => {
@@ -96,6 +99,7 @@ test('Tell Claude about changes off: the toast stays, the note goes', { options:
   await clock.advance(60_000)
   expect(w.toasts.length).toBe(1)
   expect(w.logs.some(l => l.includes('$.session.append'))).toBe(false)
+  expect(w.notes).toEqual([])
 })
 
 test('Alert on "failures only": a check passing does not alert', { options: { alertOn: 'failures only' } }, async ($, on) => {
@@ -313,8 +317,9 @@ test('on a build before 2.1.289 it watches and alerts as before, in memory', asy
   // each missing call logged once, however often it was tried
   const missing = w.logs.filter(l => l.includes('unavailable'))
   expect(missing.length).toBe(new Set(missing.map(l => l.split(' unavailable')[0])).size)
-  // ($.state is the test engine's own, so it never goes missing here)
-  expect(missing.map(l => l.split(' unavailable')[0])).toEqual(['cc-pr-tracker: $.session.id', 'cc-pr-tracker: $.session.append', 'cc-pr-tracker: $.ui.copy'])
+  // ($.state is the test engine's own, so it never goes missing here; newer test engines answer
+  // $.session.append themselves, so it goes missing only on some)
+  expect(missing.map(l => l.split(' unavailable')[0]).filter(name => !name.endsWith('$.session.append'))).toEqual(['cc-pr-tracker: $.session.id', 'cc-pr-tracker: $.ui.copy'])
 })
 
 test('a PR URL inside a normal prompt is watched and the prompt still runs', async ($, on) => {
@@ -366,6 +371,90 @@ test('a draft PR says draft', async ($, on) => {
   await start($)
   await $.prompt.submit({ text: PR, wait: false })
   expect(await texts(await band($, 'terminal'))).toContain(' draft · ')
+})
+
+test('Stop watching merged or closed PRs: a PR that merges leaves the list', { options: { stopWhenDone: true } }, async ($, on) => {
+  const { w, clock } = world(on)
+  await start($)
+  await $.prompt.submit({ text: PR, wait: false })
+  w.response = gql({ state: 'MERGED', mergeStateStatus: 'UNKNOWN' })
+  await clock.advance(60_000)
+  expect(w.toasts).toEqual(['repo#7 merged · stopped watching'])
+  expect(await status($)).toContain('No PRs are watched')
+})
+
+test('a merged PR keeps its line by default', async ($, on) => {
+  const { w, clock } = world(on)
+  await start($)
+  await $.prompt.submit({ text: PR, wait: false })
+  w.response = gql({ state: 'MERGED', mergeStateStatus: 'UNKNOWN' })
+  await clock.advance(60_000)
+  expect(await status($)).toContain('state merged')
+})
+
+test('turning Stop watching merged or closed PRs on drops the ones already done', async ($, on) => {
+  const { w } = world(on)
+  w.response = gql({ state: 'CLOSED', mergeStateStatus: 'UNKNOWN' })
+  await start($)
+  await $.prompt.submit({ text: PR, wait: false })
+  expect(await status($)).toContain('state closed')
+  await $.config.set({ key: 'cc-pr-tracker.stopWhenDone', value: true } as any)
+  expect(await status($)).toContain('No PRs are watched')
+})
+
+test('Count all checks: an optional check failing counts and alerts', { options: { allChecks: true } }, async ($, on) => {
+  const { w, clock } = world(on)
+  w.response = gql({}, [run('lint', 'SUCCESS'), run('docs', null, false)])
+  await start($)
+  await $.prompt.submit({ text: PR, wait: false })
+  w.response = gql({}, [run('lint', 'SUCCESS'), run('docs', 'FAILURE', false)])
+  await clock.advance(60_000)
+  expect(w.toasts).toEqual(['repo#7 docs: pending → fail'])
+  const shown = await texts(await band($, 'terminal'))
+  expect(shown).toContain('✓1')
+  expect(shown).toContain('✗1')
+  expect(shown).not.toContain('optional ✗')
+  expect(await status($)).toContain('optional checks (1):\n    fail docs')
+})
+
+test('by default an optional check failing does not alert', async ($, on) => {
+  const { w, clock } = world(on)
+  w.response = gql({}, [run('lint', 'SUCCESS'), run('docs', null, false)])
+  await start($)
+  await $.prompt.submit({ text: PR, wait: false })
+  w.response = gql({}, [run('lint', 'SUCCESS'), run('docs', 'FAILURE', false)])
+  await clock.advance(60_000)
+  expect(w.toasts).toEqual([])
+  expect(await texts(await band($, 'terminal'))).toContain('(+1 optional ✗)')
+})
+
+test('Alert on review changes: an approval alerts, even under "failures only"', { options: { alertOnReview: true, alertOn: 'failures only' } }, async ($, on) => {
+  const { w, clock } = world(on)
+  await start($)
+  await $.prompt.submit({ text: PR, wait: false })
+  w.response = gql({ reviewDecision: 'APPROVED' })
+  await clock.advance(60_000)
+  expect(w.toasts).toEqual(['repo#7 review: review required → approved'])
+})
+
+test('a review change does not alert by default', async ($, on) => {
+  const { w, clock } = world(on)
+  await start($)
+  await $.prompt.submit({ text: PR, wait: false })
+  w.response = gql({ reviewDecision: 'APPROVED' })
+  await clock.advance(60_000)
+  expect(w.toasts).toEqual([])
+})
+
+test('Flash strip off: an alert toasts without the strip', { options: { flash: false } }, async ($, on) => {
+  const { w, clock } = world(on)
+  await start($)
+  await $.prompt.submit({ text: PR, wait: false })
+  const ui = await band($, 'terminal')
+  w.response = gql({}, [run('lint', 'FAILURE')])
+  await clock.advance(60_000)
+  expect(w.toasts.length).toBe(1)
+  expect(await texts(ui)).not.toContain('PR checks changed')
 })
 
 // ---- what is drawn, on each surface that draws the band and panes

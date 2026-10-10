@@ -4,7 +4,7 @@ Watch GitHub pull requests without leaving your Claude Code session.
 
 Paste a PR URL, or let Claude open one, and it gets one line above the prompt: merge state, review decision and required checks, refreshed every minute by default. When a check flips or the merge state moves you get a toast, a one-second flash and a sound, and Claude gets a note with the failing check's log link. You keep working; the PR tells you when it needs you.
 
-Claude can also ask for a PR's status itself, the list survives restarts, and `/config` controls what alerts and how often PRs are polled.
+Claude can also ask for a PR's status itself, the list survives restarts, and `/config` controls what alerts, which checks count, and how often PRs are polled.
 
 ![Pasting three PR URLs; each becomes a line above the prompt, then the details panel opens for one of them](docs/demo.gif)
 
@@ -73,15 +73,15 @@ The list is kept with the session. Resuming it (`claude --resume`, `--continue`)
 
 ## Reading the line
 
-- **Label**: `repo#number`, then `draft`, `merged` or `closed` when the PR is not simply open. A merged or closed PR keeps its line until you stop it, shortened to its label, its state in magenta (merged) or gray (closed) and its title, all struck through.
+- **Label**: `repo#number`, then `draft`, `merged` or `closed` when the PR is not simply open. A merged or closed PR keeps its line until you stop it, shortened to its label, its state in magenta (merged) or gray (closed) and its title, all struck through. With **Stop watching merged or closed PRs** on, the line goes away instead.
 - **Merge state** is GitHub's own value, lowercased. Green (`clean`, `has_hooks`) means mergeable now. Yellow (`behind`, `unstable`) means update the branch or an optional check failed. Red (`blocked`, `dirty`) means a required check or review is missing, or there are conflicts. Gray (`draft`, `unknown`) needs no action; `unknown` usually resolves on the next poll.
 - **Review decision** is `approved` in green, `changes requested` in red, `review required` in yellow, or `no review` in gray when the repo has no review rules.
-- **Checks** count only the required ones: `✓N` passed, `✗N` failed or cancelled, `●N` pending. Skipped checks are not counted and show as `○` only in the details panel. Failing optional checks are summarised as `(+N optional ✗)` and listed there too.
+- **Checks** count only the required ones: `✓N` passed, `✗N` failed or cancelled, `●N` pending. Skipped checks are not counted and show as `○` only in the details panel. Failing optional checks are summarised as `(+N optional ✗)` and listed there too. With **Count all checks** on, the counts cover every check, so there is no optional summary, and the details panel lists every optional check.
 - **`· refresh failed`** in red at the end means the last poll errored and the line shows the previous values.
 
 ## Alerts
 
-Every poll is compared with the previous one. A required check changing bucket (for example `pending → fail`, or a new check appearing) or the merge state moving (for example `blocked → clean`) triggers:
+Every poll is compared with the previous one. A required check changing bucket (for example `pending → fail`, or a new check appearing) or the merge state moving (for example `blocked → clean`) triggers the list below. With **Count all checks** on, optional checks count too; with **Alert on review changes** on, so does the review decision moving (for example `review required → approved`).
 
 - a toast in the session, for example `my-service#42 lint: pending → fail`
 - a one-second white strip above the prompt reading `● PR checks changed`
@@ -89,7 +89,7 @@ Every poll is compared with the previous one. A required check changing bucket (
 - inside cmux: a flash of the session's own pane and a notification that marks its workspace unread, so the change reaches you from another workspace
 - a note in the conversation that you do not see but Claude reads on its next turn, marked as an automated notice with GitHub's text quoted, for example `[cc-pr-tracker: automated status notice, …] org/my-service#42 (…) changed: "lint: pending → fail". Newly failing required checks: "lint" https://…`
 
-**Alert on**, **Alert sound** and **Tell Claude about changes** in `/config` (see Settings) narrow this. A muted PR gets none of these, the note included. Two things never alert: the first load of a PR, and a move into or out of GitHub's temporary `unknown` merge state.
+**Alert on**, **Alert sound**, **Flash strip** and **Tell Claude about changes** in `/config` (see Settings) narrow this. A muted PR gets none of these, the note included. Two things never alert: the first load of a PR, and a move into or out of GitHub's temporary `unknown` merge state.
 
 ## Settings
 
@@ -104,6 +104,10 @@ Open `/config`; the rows are under cc-pr-tracker. Each also takes `/config cc-pr
 | Poll every (seconds) | `pollSeconds` | 60 | 30 to 3600; a value outside is held to the nearer end. One GraphQL call per PR per poll. |
 | Auto-watch PRs | `autoWatch` | answers and gh pr create | `answers and gh pr create`, `gh pr create only`, or `off`. Pasted URLs are always watched. |
 | Remember watched PRs | `remember` | this session | `this session`: resuming it brings the list back, a new session starts empty. `this project`: every new session in the directory watches the list. |
+| Stop watching merged or closed PRs | `stopWhenDone` | off | A PR's line goes away once it merges or closes, with a toast saying so. Turning it on drops the lines already done. A PR you paste that is already merged stays until you stop it or turn this on. |
+| Count all checks | `allChecks` | off | The line counts and alerts on every check, not only the required ones; the details panel and `pr_status` list every optional check. |
+| Alert on review changes | `alertOnReview` | off | The review decision moving (for example to `approved` or `changes requested`) alerts too, whatever **Alert on** is set to. |
+| Flash strip | `flash` | on | The one-second `● PR checks changed` strip above the prompt. The toast, sound, cmux pane flash and notification stay. |
 
 ## Troubleshooting
 
@@ -123,7 +127,7 @@ Open `/config`; the rows are under cc-pr-tracker. Each also takes `/config cc-pr
 - The area above the prompt has a limited number of rows, about half the terminal. Very many PRs will scroll.
 - A headless `claude -p` run never draws. Only interactive terminal sessions show the UI.
 - A PR created in the browser or from another terminal must be pasted. Claude only auto-watches PRs whose URL appears in its answer or in `gh pr create` output.
-- Merged and closed PRs keep polling until you stop them.
+- Merged and closed PRs keep polling until you stop them, unless **Stop watching merged or closed PRs** is on.
 - Only `github.com` URLs are recognised; GitHub Enterprise hosts are not.
 - GitHub's rate limit is not handled specially; a refused poll shows `refresh failed` and the next one retries.
 

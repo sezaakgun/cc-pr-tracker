@@ -165,4 +165,16 @@ test('shouldAlert', () => {
   expect(shouldAlert('failures and ready to merge', pass, 0, 'BLOCKED', 'BLOCKED')).toBe(false)
   // clean → has_hooks is not newly ready
   expect(shouldAlert('failures and ready to merge', ['merge: clean → has_hooks'], 0, 'CLEAN', 'HAS_HOOKS')).toBe(false)
+  // a review change alerts whatever Alert on says
+  expect(shouldAlert('failures only', ['review: review required → approved'], 0, 'BLOCKED', 'BLOCKED', true)).toBe(true)
+})
+
+test('prChanges with review decisions', () => {
+  const prev = new Map([['lint', 'pass']])
+  const lint = [{ key: 'lint', name: 'lint', bucket: 'pass', link: '' }]
+  expect(prChanges('BLOCKED', prev, 'BLOCKED', lint, 'REVIEW_REQUIRED', 'APPROVED')).toEqual(['review: review required → approved'])
+  expect(prChanges('BLOCKED', prev, 'CLEAN', lint, '', 'CHANGES_REQUESTED')).toEqual(['merge: blocked → clean', 'review: no review → changes requested'])
+  expect(prChanges('BLOCKED', prev, 'BLOCKED', lint, 'APPROVED', 'APPROVED')).toEqual([])
+  // not compared unless both are passed
+  expect(prChanges('BLOCKED', prev, 'BLOCKED', lint)).toEqual([])
 })
