@@ -283,6 +283,8 @@ export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     const r = await next(e)
     const log = (text: string) => $.ui.log(`cc-pr-tracker: ${text}`)
+    // a transcript line of the PRs' own, where no band shows them; the terminal heads it with the plugin's name
+    const say = (text: string) => $.ui.log(text)
 
     // inside cmux the session's own pane is in the environment: cmux's CLI flashes that pane and
     // posts notifications that mark its workspace unread, even while you are in another workspace
@@ -399,7 +401,7 @@ export const register: Register = (on, options) => {
             // token that may not use it: REST from now on; any other failure is the PR's own
             if (!/not available|HTTP 403/i.test(String(err))) throw err
             rest = true
-            log('GitHub refused GraphQL; polling over the REST API from now on')
+            say('GitHub refused GraphQL; polling over the REST API from now on')
           }
         }
         if (rest) found = await viaRest(owner, repo, num)
@@ -417,7 +419,7 @@ export const register: Register = (on, options) => {
         // "Stop watching merged or closed PRs": a PR seen open that is now done leaves the list
         if (cfg.stopWhenDone && prev?.state === 'OPEN' && v.state !== 'OPEN') {
           if (!pr.muted && !cfg.muteAll) $.ui.toast(`${pr.label} ${v.state.toLowerCase()} · stopped watching`, { timeoutMs: 5000 })
-          if (await inTranscript()) log(`${pr.label} ${v.state.toLowerCase()} · stopped watching`)
+          if (await inTranscript()) say(`${pr.label} ${v.state.toLowerCase()} · stopped watching`)
           stop?.(pr)
           return
         }
@@ -442,12 +444,12 @@ export const register: Register = (on, options) => {
           // a user-role row the person does not see as typed: Claude reads it on its next turn
           if (cfg.notifyClaude) attempt('$.session.append', () => $.session.append({ message: { type: 'user', content: [{ type: 'text', text: changeNote(pr, changes, newlyFailed, all) }] } }))
           // no band to flash: the change is a line in the transcript, with the failing checks' logs
-          if (await inTranscript()) log(`${pr.label} ${changes.join(' · ')}${newlyFailed.map(c => ` · ✗ ${c.name}${c.link ? ` ${c.link}` : ''}`).join('')}`)
-        } else if (prevMerge === undefined && await inTranscript()) log(lineOf(pr, !!pr.muted || cfg.muteAll, all))
+          if (await inTranscript()) say(`${pr.label} ${changes.join(' · ')}${newlyFailed.map(c => ` · ✗ ${c.name}${c.link ? ` ${c.link}` : ''}`).join('')}`)
+        } else if (prevMerge === undefined && await inTranscript()) say(lineOf(pr, !!pr.muted || cfg.muteAll, all))
       } catch (err) {
         const first = !pr.view && !pr.error
         pr.error = err instanceof Error ? err.message : String(err)
-        if (first && await inTranscript()) log(lineOf(pr))
+        if (first && await inTranscript()) say(lineOf(pr))
       } finally {
         pr.updated = await $.clock.now()
         if (prs.has(pr.id)) save?.()
