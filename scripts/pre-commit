@@ -1,0 +1,10 @@
+#!/bin/sh
+# Pre-commit hook: validate, test and lint when plugin files are staged.
+set -eu
+
+staged=$(git diff --cached --name-only --diff-filter=ACM -- '*.ts' '*.tsx' '*.json' '*.jsonc')
+[ -n "$staged" ] || exit 0
+
+claude plugin validate .
+claude plugin test .
+npx --yes @biomejs/biome@2.5.15 lint --error-on-warnings
