@@ -441,7 +441,6 @@ export const register: Register = (on, options) => {
           alert(newlyFailed.length ? SOUND_FAIL : SOUND_CHANGE)
           const what = newlyFailed.length ? `a ${all ? '' : 'required '}check failed` : reviewChanged && changes.length === 1 ? 'review changed' : 'checks changed'
           if (cmuxBin && surfaceId) cmux(['notify', '--title', `${pr.label}: ${what}`, '--body', changes.join(' · ')])
-          else attempt('$.ui.notify', () => $.ui.notify(changes.join(' · '), { title: `${pr.label}: ${what}` }))
           // a user-role row the person does not see as typed: Claude reads it on its next turn
           if (cfg.notifyClaude) attempt('$.session.append', () => $.session.append({ message: { type: 'user', content: [{ type: 'text', text: changeNote(pr, changes, newlyFailed, all) }] } }))
           // no band to flash: the change is a line in the transcript, with the failing checks' logs
