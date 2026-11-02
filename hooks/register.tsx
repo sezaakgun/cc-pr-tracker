@@ -681,7 +681,7 @@ export const register: Register = (on, options) => {
                 <Button key={`open:${pr.pane}`} label="open" onPress={() => openUrl?.(pr.url)} />
                 <Button key={`copy:${pr.pane}`} label="copy" onPress={press => copy?.(pr.url, press.surface)} />
                 <Button key={`mute:${pr.pane}`} label={pr.muted ? 'unmute' : 'mute'} onPress={() => { pr.muted = !pr.muted; save?.(); $.ui.invalidate('ui.render') }} />
-                <Button key={`details:${pr.pane}`} label="details" onPress={() => { $.ui.open({ id: pr.pane, title: pr.id, focus: true }) }} />
+                <Button key={`details:${pr.pane}`} label="details" onPress={() => { $.ui.open({ id: pr.pane, title: pr.id, focus: true, closeOnEscape: true }) }} />
                 <Button key={`stop:${pr.pane}`} label="×" onPress={() => stop?.(pr)} />
               </Box>
             </Box>
@@ -719,6 +719,8 @@ export const register: Register = (on, options) => {
           <Button key={`pane-copy:${pr.pane}`} label="copy URL" onPress={press => copy?.(pr.url, press.surface)} />
           <Text> </Text>
           <Button key={`pane-stop:${pr.pane}`} label="stop watching" onPress={() => stop?.(pr)} />
+          <Text> </Text>
+          <Button key={`pane-close:${pr.pane}`} label="close" onPress={() => $.ui.close({ id: pr.pane })} />
         </Box>
         <Text bold>{pr.required.length ? `Required checks (${pr.required.length})` : 'Required checks: none reported'}</Text>
         {[...pr.required, ...optionalShown].map((c, i) => (

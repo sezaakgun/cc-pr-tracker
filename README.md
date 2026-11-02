@@ -66,7 +66,7 @@ On Claude Code 2.1.289 or later the list comes back when you resume a session, C
 
   ![Asking why a PR is red: Claude calls pr_status and names the failing check with its log link](docs/pr-status.png)
 
-- **See every check**: hover the line and press `details`. A side panel shows the title, the state, merge state and review, three buttons (`open in browser`, `copy URL`, `stop watching`), then every required check and every failing optional one (every optional one with **Count all checks** on), linked to its run when the run has an https link. Its last line counts the optional checks and says when the PR was last polled.
+- **See every check**: hover the line and press `details`. A side panel shows the title, the state, merge state and review, four buttons (`open in browser`, `copy URL`, `stop watching`, `close`), then every required check and every failing optional one (every optional one with **Count all checks** on), linked to its run when the run has an https link. Its last line counts the optional checks and says when the PR was last polled. Esc or `close` closes the panel and the PR stays watched.
 
   ![The details panel open beside the session: title, state, the open in browser, copy URL and stop watching buttons, and every required check with the failing one marked](docs/details.png)
 

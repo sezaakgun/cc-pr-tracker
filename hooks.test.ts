@@ -22,7 +22,7 @@ const gql = (pr: Record<string, unknown> = {}, checks = [run('lint', null)]) => 
 // the engine beneath the plugin; `w` records what the plugin did and `w.response` is what gh prints
 // `old`: a build before 2.1.289, where $.session.root and $.ui.copy answer nothing
 function world(on: any, store: Record<string, unknown> = {}, { old = false } = {}) {
-  const w = { gh: 0, toasts: [] as string[], response: gql(), logs: [] as string[], opened: [] as string[], copied: [] as { text: string; surface?: string }[], copyResult: { isCopied: true } as Record<string, unknown>, ghError: '', bashStdout: '', runs: [] as string[][], notes: [] as string[], surfaces: ['terminal'] as string[], status: [] as (string | undefined)[], hold: undefined as Promise<void> | undefined, state: undefined as unknown, sessionId: 's1', respond: (argv: string[]) => w.response, refuse: (_argv: string[]) => '' }
+  const w = { gh: 0, toasts: [] as string[], response: gql(), logs: [] as string[], opened: [] as string[], openArgs: [] as Record<string, unknown>[], closed: [] as string[], copied: [] as { text: string; surface?: string }[], copyResult: { isCopied: true } as Record<string, unknown>, ghError: '', bashStdout: '', runs: [] as string[][], notes: [] as string[], surfaces: ['terminal'] as string[], status: [] as (string | undefined)[], hold: undefined as Promise<void> | undefined, state: undefined as unknown, sessionId: 's1', respond: (argv: string[]) => w.response, refuse: (_argv: string[]) => '' }
   const clock = mock.clock(on)
   // $.store over `store` itself, so a test reads what the plugin wrote
   on('store.get', async (_$: unknown, e: any) => ({ value: store[e.key] }))
@@ -60,8 +60,8 @@ function world(on: any, store: Record<string, unknown> = {}, { old = false } = {
     const error = w.ghError || w.refuse(e.argv)
     return { value: error ? { stdout: '', stderr: error, exitCode: 1 } : { stdout: w.respond(e.argv), stderr: '', exitCode: 0 } }
   })
-  on('ui.close', ok())
-  on('ui.open', async (_$: unknown, e: any) => { w.opened.push(e.id); return { value: undefined } })
+  on('ui.close', async (_$: unknown, e: any) => { w.closed.push(e.id); return { value: undefined } })
+  on('ui.open', async (_$: unknown, e: any) => { w.opened.push(e.id); w.openArgs.push({ ...e }); return { value: undefined } })
   if (!old) on('ui.copy', async (_$: unknown, e: any) => { w.copied.push({ text: e.text, surface: e.surface }); return { value: w.copyResult } })
   // the engine's own drawing beneath the plugin's: nothing
   on('ui.render', async () => ({ type: 'Box', props: {}, children: [] }))
@@ -649,5 +649,17 @@ for (const surface of SURFACES) {
     expect((await pane.findAll({ type: 'Link' })).map((l: any) => l.text)).toEqual(['lint', 'unit', 'docs'])
     await pane.press({ key: 'pane-copy:pr-repo-7' })
     expect(w.copied).toEqual([{ text: PR, surface }])
+  })
+
+  test(`${surface}: the details pane closes on Escape and from its close button, and the PR stays watched`, async ($, on) => {
+    const { w } = world(on)
+    await start($)
+    await $.prompt.submit({ text: PR, wait: false })
+    await (await band($, surface)).press({ key: 'details:pr-repo-7' })
+    expect(w.openArgs[0]).toMatchObject({ id: 'pr-repo-7', focus: true, closeOnEscape: true })
+    const pane = await $.ui.mount({ plugin: 'cc-pr-tracker', surface, component: 'Pane', requestId: 'pr-repo-7', props: { title: 'org/repo#7', isFocused: true, bodyColumns: 80 } as any, viewport: { columns: 80, rows: 30 } })
+    await pane.press({ key: 'pane-close:pr-repo-7' })
+    expect(w.closed).toEqual(['pr-repo-7'])
+    expect(await status($)).toContain('org/repo#7')
   })
 }
