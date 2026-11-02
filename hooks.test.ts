@@ -22,7 +22,7 @@ const gql = (pr: Record<string, unknown> = {}, checks = [run('lint', null)]) => 
 // the engine beneath the plugin; `w` records what the plugin did and `w.response` is what gh prints
 // `old`: a build before 2.1.289, where $.session.root and $.ui.copy answer nothing
 function world(on: any, store: Record<string, unknown> = {}, { old = false } = {}) {
-  const w = { gh: 0, toasts: [] as string[], response: gql(), logs: [] as string[], opened: [] as string[], openArgs: [] as Record<string, unknown>[], closed: [] as string[], copied: [] as { text: string; surface?: string }[], copyResult: { isCopied: true } as Record<string, unknown>, ghError: '', bashStdout: '', runs: [] as string[][], notes: [] as string[], surfaces: ['terminal'] as string[], status: [] as (string | undefined)[], hold: undefined as Promise<void> | undefined, state: undefined as unknown, sessionId: 's1', respond: (argv: string[]) => w.response, refuse: (_argv: string[]) => '' }
+  const w = { gh: 0, toasts: [] as string[], notified: [] as { title?: string; text: string }[], response: gql(), logs: [] as string[], opened: [] as Record<string, unknown>[], closed: [] as string[], copied: [] as { text: string; surface?: string }[], copyResult: { isCopied: true } as Record<string, unknown>, ghError: '', bashStdout: '', runs: [] as string[][], notes: [] as string[], surfaces: ['terminal'] as string[], status: [] as (string | undefined)[], hold: undefined as Promise<void> | undefined, state: undefined as unknown, sessionId: 's1', respond: (argv: string[]) => w.response, refuse: (_argv: string[]) => '' }
   const clock = mock.clock(on)
   // $.store over `store` itself, so a test reads what the plugin wrote
   on('store.get', async (_$: unknown, e: any) => ({ value: store[e.key] }))
@@ -61,8 +61,9 @@ function world(on: any, store: Record<string, unknown> = {}, { old = false } = {
     return { value: error ? { stdout: '', stderr: error, exitCode: 1 } : { stdout: w.respond(e.argv), stderr: '', exitCode: 0 } }
   })
   on('ui.close', async (_$: unknown, e: any) => { w.closed.push(e.id); return { value: undefined } })
-  on('ui.open', async (_$: unknown, e: any) => { w.opened.push(e.id); w.openArgs.push({ ...e }); return { value: undefined } })
+  on('ui.open', async (_$: unknown, e: any) => { w.opened.push({ ...e }); return { value: undefined } })
   if (!old) on('ui.copy', async (_$: unknown, e: any) => { w.copied.push({ text: e.text, surface: e.surface }); return { value: w.copyResult } })
+  if (!old) on('ui.notify', async (_$: unknown, e: any) => { w.notified.push({ title: e.title, text: e.text }); return { value: { isSent: true, channel: 'iterm2' } } })
   // the engine's own drawing beneath the plugin's: nothing
   on('ui.render', async () => ({ type: 'Box', props: {}, children: [] }))
   on('ui.log', async (_$: unknown, e: any) => { w.logs.push(e.text); return { value: undefined } })
@@ -90,6 +91,7 @@ test('a required check failing alerts and tells Claude, with the log link', asyn
   w.response = gql({}, [run('lint', 'FAILURE')])
   await clock.advance(60_000)
   expect(w.toasts).toEqual(['repo#7 lint: pending → fail'])
+  expect(w.notified).toEqual([{ title: 'repo#7: a required check failed', text: 'lint: pending → fail' }])
   // the note itself: claude plugin test on 2.1.289 never hands $.session.append to a test's hook, so
   // there the call fails beneath the plugin and is logged; its text is changeNote's, tested in register.test.ts
   expect(w.notes.some(n => n.includes('"lint" https://ci.example.com/lint')) || w.logs.some(l => l.includes('$.session.append'))).toBe(true)
@@ -328,7 +330,7 @@ test('on a build before 2.1.289 it watches and alerts as before, in memory', asy
   // ($.state is the test engine's own, so it never goes missing here; newer test engines answer
   // $.session.append themselves, so it goes missing only on some)
   // (/prs and the surfaces are missing too: such a build draws the band and nothing else)
-  expect(missing.map(l => l.split(' unavailable')[0]).filter(name => !name.endsWith('$.session.append')).sort()).toEqual(['cc-pr-tracker: $.command.register', 'cc-pr-tracker: $.session.id', 'cc-pr-tracker: $.session.surfaces', 'cc-pr-tracker: $.ui.copy'])
+  expect(missing.map(l => l.split(' unavailable')[0]).filter(name => !name.endsWith('$.session.append')).sort()).toEqual(['cc-pr-tracker: $.command.register', 'cc-pr-tracker: $.session.id', 'cc-pr-tracker: $.session.surfaces', 'cc-pr-tracker: $.ui.copy', 'cc-pr-tracker: $.ui.notify'])
 })
 
 test('a PR URL inside a normal prompt is watched and the prompt still runs', async ($, on) => {
@@ -392,12 +394,15 @@ test('Stop watching merged or closed PRs: a PR that merges leaves the list', { o
   expect(await status($)).toContain('No PRs are watched')
 })
 
-test('a merged PR keeps its line by default', async ($, on) => {
+test('a merged PR keeps its line by default and stops polling on the timer', async ($, on) => {
   const { w, clock } = world(on)
   await start($)
   await $.prompt.submit({ text: PR, wait: false })
   w.response = gql({ state: 'MERGED', mergeStateStatus: 'UNKNOWN' })
   await clock.advance(60_000)
+  expect(w.gh).toBe(2)
+  await clock.advance(60_000)
+  expect(w.gh).toBe(2)
   expect(await status($)).toContain('state merged')
 })
 
@@ -636,28 +641,19 @@ for (const surface of SURFACES) {
     expect(await status($)).toContain('No PRs are watched')
   })
 
-  test(`${surface}: details opens the PR's pane, listing every required check and failing optional one`, async ($, on) => {
+  test(`${surface}: details opens the PR's pane (closing on Escape or close button) and lists checks`, async ($, on) => {
     const { w } = world(on)
     w.response = gql({}, [run('lint', 'FAILURE'), run('unit', 'SUCCESS'), run('docs', 'FAILURE', false), run('style', 'SUCCESS', false)])
     await start($)
     await $.prompt.submit({ text: PR, wait: false })
     await (await band($, surface)).press({ key: 'details:pr-repo-7' })
-    expect(w.opened).toEqual(['pr-repo-7'])
+    expect(w.opened).toMatchObject([{ id: 'pr-repo-7', focus: true, closeOnEscape: true }])
     const pane = await $.ui.mount({ plugin: 'cc-pr-tracker', surface, component: 'Pane', requestId: 'pr-repo-7', props: { title: 'org/repo#7', isFocused: true, bodyColumns: 80 } as any, viewport: { columns: 80, rows: 30 } })
     const shown = await texts(pane)
     for (const part of ['Fix it', 'Required checks (2)', '(optional)', '+ 2 optional checks']) expect(shown).toContain(part)
     expect((await pane.findAll({ type: 'Link' })).map((l: any) => l.text)).toEqual(['lint', 'unit', 'docs'])
     await pane.press({ key: 'pane-copy:pr-repo-7' })
     expect(w.copied).toEqual([{ text: PR, surface }])
-  })
-
-  test(`${surface}: the details pane closes on Escape and from its close button, and the PR stays watched`, async ($, on) => {
-    const { w } = world(on)
-    await start($)
-    await $.prompt.submit({ text: PR, wait: false })
-    await (await band($, surface)).press({ key: 'details:pr-repo-7' })
-    expect(w.openArgs[0]).toMatchObject({ id: 'pr-repo-7', focus: true, closeOnEscape: true })
-    const pane = await $.ui.mount({ plugin: 'cc-pr-tracker', surface, component: 'Pane', requestId: 'pr-repo-7', props: { title: 'org/repo#7', isFocused: true, bodyColumns: 80 } as any, viewport: { columns: 80, rows: 30 } })
     await pane.press({ key: 'pane-close:pr-repo-7' })
     expect(w.closed).toEqual(['pr-repo-7'])
     expect(await status($)).toContain('org/repo#7')

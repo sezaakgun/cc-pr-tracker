@@ -440,7 +440,8 @@ export const register: Register = (on, options) => {
           $.ui.toast(`${pr.label} ${changes.join(' · ')}`, { timeoutMs: 8000 })
           alert(newlyFailed.length ? SOUND_FAIL : SOUND_CHANGE)
           const what = newlyFailed.length ? `a ${all ? '' : 'required '}check failed` : reviewChanged && changes.length === 1 ? 'review changed' : 'checks changed'
-          cmux(['notify', '--title', `${pr.label}: ${what}`, '--body', changes.join(' · ')])
+          if (cmuxBin && surfaceId) cmux(['notify', '--title', `${pr.label}: ${what}`, '--body', changes.join(' · ')])
+          else attempt('$.ui.notify', () => $.ui.notify(changes.join(' · '), { title: `${pr.label}: ${what}` }))
           // a user-role row the person does not see as typed: Claude reads it on its next turn
           if (cfg.notifyClaude) attempt('$.session.append', () => $.session.append({ message: { type: 'user', content: [{ type: 'text', text: changeNote(pr, changes, newlyFailed, all) }] } }))
           // no band to flash: the change is a line in the transcript, with the failing checks' logs
@@ -466,7 +467,7 @@ export const register: Register = (on, options) => {
     }
     startPoll = () => {
       poll?.cancel()
-      poll = $.clock.every(pollMs(cfg.pollSeconds), () => { for (const pr of prs.values()) refresh?.(pr) })
+      poll = $.clock.every(pollMs(cfg.pollSeconds), () => { for (const pr of prs.values()) if (pr.view?.state !== 'MERGED') refresh?.(pr) })
     }
     startPoll()
 
@@ -480,7 +481,7 @@ export const register: Register = (on, options) => {
     watch = ([url, owner, repo, num], auto = false, extra = {}) => {
       const id = `${owner}/${repo}#${num}`
       if (prs.has(id)) return
-      const pane = `pr-${repo}-${num}`.replace(/[^\w-]/g, '_').slice(0, 64)
+      const pane = `pr-${repo.slice(0, 50)}-${num}`.replace(/[^\w-]/g, '_')
       const pr: Pr = { url, id, label: `${repo}#${num}`, pane, auto, dropIfClosed: auto, required: [], others: [], ...extra }
       prs.set(id, pr)
       save?.()
@@ -520,6 +521,7 @@ export const register: Register = (on, options) => {
       name: 'pr_status',
       description: 'Status of the GitHub pull requests cc-pr-tracker watches in this session, polled from GitHub when called: state, merge state, review decision, and every required check with its result and log link. Pass `pr` (a PR URL or owner/repo#number) for one PR; omit it for all of them. Use it instead of calling gh for these PRs.',
       inputSchema: { type: 'object', properties: { pr: { type: 'string', description: 'A PR URL or owner/repo#number; omit for every watched PR' } } },
+      isDeferred: false,
     }))
     await attempt('$.command.register', () => $.command.register({ name: 'prs', description: 'Show the watched PRs and their failing checks; PR URLs after it start or stop watching them', argumentHint: '[PR URL…]', immediate: true }))
     showStatus()
@@ -631,7 +633,7 @@ export const register: Register = (on, options) => {
     if (!bandSeen.has(e.surface)) { bandSeen.add(e.surface); showStatus?.() }
     if (e.props.hasSurvey || (!flashing && !prs.size)) return next(e)
     const { Box, Text, Link, Button } = await $.ui.resolve(e)
-    const cols = e.viewport?.columns ?? 80
+    const cols = e.props.bodyColumns ?? e.viewport?.columns ?? 80
     return (
       <Box flexDirection="column">
         {flashing ? (
