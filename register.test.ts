@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { DEFAULTS, ONLY_URLS, changeNote, fromRest, latestPerName, lineOf, linkable, pollMs, prChanges, readCfg, requiredOf, reviewDecisionOf, shouldAlert, statusLine, statusText, toCheck, toChecks } from './hooks/register.tsx'
+import { DEFAULTS, ONLY_URLS, changeNote, fromRest, isDone, latestPerName, lineOf, linkable, pollMs, prChanges, readCfg, requiredOf, reviewDecisionOf, shouldAlert, statusLine, statusText, stopMs, toCheck, toChecks } from './hooks/register.tsx'
 
 const check = (name: string, bucket: string) => ({ key: name, name, bucket, link: '' })
 
@@ -216,4 +216,16 @@ test('lineOf and statusLine', () => {
   expect(lineOf({ ...pr, view: undefined, error: 'HTTP 401' })).toBe('r#7 gh failed: HTTP 401')
   expect(statusLine([])).toBeUndefined()
   expect(statusLine([pr, { ...pr, label: 'r#8', view: undefined }])).toBe('PRs: r#7 draft ✗1 ●1 · r#8 loading…')
+})
+
+test('isDone and stopMs', () => {
+  const pr = (state?: string) => ({ url: '', id: '', label: '', pane: '', required: [], others: [], ...(state ? { view: { number: 1, title: '', state, isDraft: false, mergeable: '', mergeStateStatus: '', reviewDecision: '' } } : {}) })
+  expect([pr('MERGED'), pr('CLOSED'), pr('OPEN'), pr()].map(isDone)).toEqual([true, true, false, false])
+  expect(stopMs(0)).toBe(0)
+  expect(stopMs(10)).toBe(600_000)
+  expect(stopMs(-5)).toBe(0)
+  expect(stopMs(2.4)).toBe(120_000)
+  expect(stopMs(5000)).toBe(1440 * 60_000)
+  expect(readCfg({ stopAfterMinutes: 10 })).toEqual({ ...DEFAULTS, stopAfterMinutes: 10 })
+  expect(readCfg({ stopAfterMinutes: '10' })).toEqual(DEFAULTS)
 })
