@@ -79,6 +79,18 @@
       "description": "A watched PR's line goes away once it is merged or closed, with a toast saying so. Turning this on drops the ones already done.",
       "default": false
     },
+    "stopAfterMinutes": {
+      "type": "number",
+      "title": "Stop watching after (minutes)",
+      "description": "With Stop watching merged or closed PRs on, how long a merged or closed PR keeps its struck-through line first. 0 drops it on the poll that sees it done. 0 to 1440; a value outside is held to the nearer end.",
+      "default": 0
+    },
+    "maxDone": {
+      "type": "number",
+      "title": "Keep at most N merged or closed PRs",
+      "description": "When more PRs than this are merged or closed, the ones that finished first stop being watched, with a toast; open PRs never count. Works with or without Stop watching merged or closed PRs. 0 keeps them all.",
+      "default": 0
+    },
     "allChecks": {
       "type": "boolean",
       "title": "Count all checks",
