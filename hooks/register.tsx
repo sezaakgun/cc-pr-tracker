@@ -30,7 +30,7 @@ type Context = { __typename: string; isRequired: boolean; name?: string; status?
 // one call replaces `gh pr view` plus `gh pr checks`; isRequired is per PR
 const QUERY = `query($o: String!, $r: String!, $n: Int!) {
   repository(owner: $o, name: $r) { pullRequest(number: $n) {
-    number title state isDraft mergeable mergeStateStatus reviewDecision
+    number title state isDraft mergeable mergeStateStatus reviewDecision mergedAt closedAt
     commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes {
       __typename
       ... on CheckRun { name status conclusion detailsUrl startedAt checkSuite { app { slug } workflowRun { event workflow { name } } } isRequired(pullRequestNumber: $n) }
@@ -106,8 +106,8 @@ export function prChanges(prevMerge: string | undefined, prevBuckets: Map<string
   return out
 }
 
-export type Cfg = { muteAll: boolean; alertOn: string; notifyClaude: boolean; sound: boolean; pollSeconds: number; autoWatch: string; remember: string; stopWhenDone: boolean; stopAfterMinutes: number; allChecks: boolean; alertOnReview: boolean; flash: boolean; transcript: string }
-export const DEFAULTS: Cfg = { muteAll: false, alertOn: 'every change', notifyClaude: true, sound: true, pollSeconds: 60, autoWatch: 'answers and gh pr create', remember: 'this session', stopWhenDone: false, stopAfterMinutes: 0, allChecks: false, alertOnReview: false, flash: true, transcript: 'when no band is drawn' }
+export type Cfg = { muteAll: boolean; alertOn: string; notifyClaude: boolean; sound: boolean; pollSeconds: number; autoWatch: string; remember: string; stopWhenDone: boolean; stopAfterMinutes: number; maxDone: number; allChecks: boolean; alertOnReview: boolean; flash: boolean; transcript: string }
+export const DEFAULTS: Cfg = { muteAll: false, alertOn: 'every change', notifyClaude: true, sound: true, pollSeconds: 60, autoWatch: 'answers and gh pr create', remember: 'this session', stopWhenDone: false, stopAfterMinutes: 0, maxDone: 0, allChecks: false, alertOnReview: false, flash: true, transcript: 'when no band is drawn' }
 // /config values by field laid over `base`; an unknown field, or a value of the wrong type, is ignored
 export function readCfg(fields: Readonly<Record<string, unknown>>, base: Cfg = DEFAULTS): Cfg {
   const out: Record<string, unknown> = { ...base }
@@ -120,6 +120,14 @@ export const pollMs = (seconds: number) => Math.min(3600, Math.max(30, Math.roun
 export const isDone = (pr: Pr) => pr.view?.state === 'MERGED' || pr.view?.state === 'CLOSED'
 // how long a done PR's line stays under "Stop watching merged or closed PRs": 0 to a day, in minutes
 export const stopMs = (minutes: number) => Math.min(1440, Math.max(0, Math.round(minutes))) * 60_000
+// when a done PR finished: GitHub's own merge or close time, else when a poll saw it done
+export const finishedAt = (pr: Pr) => Date.parse(pr.view?.mergedAt ?? pr.view?.closedAt ?? '') || pr.doneAt || 0
+// under "Keep at most N merged or closed PRs", the done PRs past the N that finished last; 0 keeps them all
+export function overCap(list: Pr[], max: number): Pr[] {
+  const n = Math.max(0, Math.round(max))
+  if (!n) return []
+  return list.filter(isDone).sort((a, b) => finishedAt(b) - finishedAt(a)).slice(n)
+}
 
 // whether a change alerts under the /config "Alert on" choice: ready to merge is the merge state
 // turning green. A review decision change is only in `changes` when "Alert on review changes" is
@@ -169,7 +177,7 @@ export function statusText(pr: Pr, all = false): string {
 // GraphQL (claude.ai/code's GitHub proxy serves REST alone). REST has no isRequired, so a check is
 // required when the base branch's protection or rulesets name it; no reviewDecision, so it is read
 // off the latest review of each reviewer; and no workflow name or event on a check run.
-type RestPull = { number: number; title: string; state: string; draft?: boolean; merged_at?: string | null; mergeable?: boolean | null; mergeable_state?: string; requested_reviewers?: unknown[]; requested_teams?: unknown[] }
+type RestPull = { number: number; title: string; state: string; draft?: boolean; merged_at?: string | null; closed_at?: string | null; mergeable?: boolean | null; mergeable_state?: string; requested_reviewers?: unknown[]; requested_teams?: unknown[] }
 type RestRun = { name: string; status: string; conclusion?: string | null; details_url?: string | null; html_url?: string | null; started_at?: string | null; app?: { slug?: string } | null }
 type RestStatus = { context: string; state: string; target_url?: string | null; created_at?: string | null }
 type RestReview = { state: string; user?: { login?: string } | null }
@@ -198,6 +206,7 @@ export function fromRest(pull: RestPull, runs: RestRun[], statuses: RestStatus[]
   return {
     number: pull.number, title: pull.title, isDraft: !!pull.draft,
     state: pull.merged_at ? 'MERGED' : pull.state.toUpperCase(),
+    mergedAt: pull.merged_at ?? null, closedAt: pull.closed_at ?? null,
     mergeable: pull.mergeable === true ? 'MERGEABLE' : pull.mergeable === false ? 'CONFLICTING' : 'UNKNOWN',
     mergeStateStatus: (pull.mergeable_state || 'unknown').toUpperCase(),
     reviewDecision: reviewDecisionOf(reviews, pull),
@@ -267,6 +276,8 @@ let storeKey: string | undefined
 // reload, the setting turned on) and drops quietly, as the lines were already struck through
 let sweep: ((all?: boolean) => Promise<void>) | undefined
 let sweepTimer: { cancel(): void } | undefined
+// drops the done PRs past "Keep at most N merged or closed PRs"; `quiet` skips the toast
+let capDone: ((quiet?: boolean) => Promise<void>) | undefined
 const dropDone = () => sweep?.(true)
 // /pr-clear and a done line's "clear done" button: every merged or closed PR goes; the count
 const clearDone = () => {
@@ -462,7 +473,8 @@ export const register: Register = (on, options) => {
         // after any alert: a PR seen open that is now done is timed for "Stop watching after"; one
         // reopened starts over
         if (!isDone(pr)) pr.doneAt = undefined
-        else if (prev?.state === 'OPEN') { pr.doneAt ??= await $.clock.now(); await sweep?.() }
+        else if (cfg.stopWhenDone && prev?.state === 'OPEN') { pr.doneAt ??= await $.clock.now(); await sweep?.() }
+        if (isDone(pr)) await capDone?.()
       } catch (err) {
         const first = !pr.view && !pr.error
         pr.error = err instanceof Error ? err.message : String(err)
@@ -506,16 +518,27 @@ export const register: Register = (on, options) => {
         if (pr.doneAt === undefined) continue
         const left = pr.doneAt + keep - now
         if (left > 0) { soonest = Math.min(soonest ?? left, left); continue }
+        // stop first: it leaves `prs` at once, so a sweep started during the await below skips it
+        stop?.(pr)
         if (!all) {
           const text = `${pr.label} ${pr.view?.state.toLowerCase()} · stopped watching`
           if (!pr.muted && !cfg.muteAll) $.ui.toast(text, { timeoutMs: 5000 })
           if (await inTranscript()) say(text)
         }
-        stop?.(pr)
       }
       // a timer that fires after the session is gone has nothing left to drop
       if (soonest !== undefined) sweepTimer = $.clock.after(soonest, () => { sweep?.().catch(() => {}) })
       save?.()
+    }
+    capDone = async (quiet = false) => {
+      for (const pr of overCap([...prs.values()], cfg.maxDone)) {
+        // stop first, as in sweep: a cap started during the await below skips it
+        stop?.(pr)
+        if (quiet) continue
+        const text = `${pr.label} ${pr.view?.state.toLowerCase()} · stopped watching`
+        if (!pr.muted && !cfg.muteAll) $.ui.toast(text, { timeoutMs: 5000 })
+        if (await inTranscript()) say(text)
+      }
     }
     watch = ([url, owner, repo, num], auto = false, extra = {}) => {
       const id = `${owner}/${repo}#${num}`
@@ -535,6 +558,7 @@ export const register: Register = (on, options) => {
     if (kept?.length) {
       for (const pr of kept) prs.set(pr.id, pr)
       await dropDone()
+      await capDone(true)
       $.ui.invalidate('ui.render')
     } else if (storeKey) {
       const key = storeKey
@@ -562,10 +586,8 @@ export const register: Register = (on, options) => {
       inputSchema: { type: 'object', properties: { pr: { type: 'string', description: 'A PR URL or owner/repo#number; omit for every watched PR' } } },
       isDeferred: false,
     }))
-    await attempt('$.command.register', async () => {
-      await $.command.register({ name: 'prs', description: 'Show the watched PRs and their failing checks; PR URLs after it start or stop watching them', argumentHint: '[PR URL…]', immediate: true })
-      await $.command.register({ name: 'pr-clear', description: 'Stop watching every merged or closed PR', immediate: true })
-    })
+    await attempt('$.command.register', () => $.command.register({ name: 'prs', description: 'Show the watched PRs and their failing checks; PR URLs after it start or stop watching them', argumentHint: '[PR URL…]', immediate: true }))
+    await attempt('$.command.register', () => $.command.register({ name: 'pr-clear', description: 'Stop watching every merged or closed PR', immediate: true }))
     showStatus()
     return r
   })
@@ -581,6 +603,8 @@ export const register: Register = (on, options) => {
     // turning "Stop watching merged or closed PRs" on drops the ones already done (after "Stop
     // watching after", counted from now); a new "Stop watching after" applies to them at once
     if (cfg.stopWhenDone !== before.stopWhenDone || cfg.stopAfterMinutes !== before.stopAfterMinutes) await dropDone()
+    // a lower "Keep at most N merged or closed PRs" drops the oldest done PRs at once
+    if (cfg.maxDone !== before.maxDone) await capDone?.()
     // the list moves to where "Remember watched PRs" now keeps it, at once
     if (cfg.remember !== before.remember) { storeKey = await keyOf?.(); save?.() }
     $.ui.invalidate('ui.render')

@@ -431,6 +431,45 @@ test('Stop watching after 10 minutes: a merged PR keeps its line, alerts, and go
   expect((w.state as any[]).map(p => p.id)).toEqual(['org/repo#8'])
 })
 
+test('turning Stop watching on later times a PR merged earlier from then, not from its merge', { options: { stopAfterMinutes: 1 } }, async ($, on) => {
+  const { w, clock } = world(on)
+  await start($)
+  await $.prompt.submit({ text: PR, wait: false })
+  w.response = gql({ state: 'MERGED', mergeStateStatus: 'UNKNOWN' })
+  await clock.advance(60_000)
+  await clock.advance(5 * 60_000)
+  await $.config.set({ key: 'cc-pr-tracker.stopWhenDone', value: true } as any)
+  expect((w.state as any[]).map(p => p.id)).toEqual(['org/repo#7'])
+  await clock.advance(60_000)
+  expect((w.state as any[]).map(p => p.id)).toEqual([])
+})
+
+test('Keep at most 1 merged or closed PR: the one that finished first goes, open PRs stay', { options: { maxDone: 1 } }, async ($, on) => {
+  const { w, clock } = world(on)
+  await start($)
+  await $.prompt.submit({ text: `${PR} https://github.com/org/repo/pull/8 https://github.com/org/repo/pull/9`, wait: false })
+  await $.tool.call({ tool: TOOL })
+  w.respond = argv => argv.includes('n=7') ? gql({ state: 'MERGED', mergeStateStatus: 'UNKNOWN', mergedAt: '2026-11-01T00:00:00Z' })
+    : argv.includes('n=8') ? gql({ state: 'CLOSED', mergeStateStatus: 'UNKNOWN', closedAt: '2026-11-02T00:00:00Z' }) : gql()
+  await clock.advance(60_000)
+  expect((w.state as any[]).map(p => p.id)).toEqual(['org/repo#8', 'org/repo#9'])
+  expect(w.toasts).toContain('repo#7 merged · stopped watching')
+  expect(w.toasts.filter(t => t.includes('stopped watching'))).toEqual(['repo#7 merged · stopped watching'])
+})
+
+test('lowering Keep at most in /config drops the oldest done PRs at once, with Stop watching off', async ($, on) => {
+  const { w } = world(on)
+  w.respond = argv => argv.includes('n=7') ? gql({ state: 'MERGED', mergeStateStatus: 'UNKNOWN', mergedAt: '2026-11-03T00:00:00Z' })
+    : argv.includes('n=8') ? gql({ state: 'MERGED', mergeStateStatus: 'UNKNOWN', mergedAt: '2026-11-01T00:00:00Z' })
+    : argv.includes('n=9') ? gql({ state: 'CLOSED', mergeStateStatus: 'UNKNOWN', closedAt: '2026-11-02T00:00:00Z' }) : gql()
+  await start($)
+  await $.prompt.submit({ text: `${PR} https://github.com/org/repo/pull/8 https://github.com/org/repo/pull/9 https://github.com/org/repo/pull/10`, wait: false })
+  await $.tool.call({ tool: TOOL })
+  expect((w.state as any[]).length).toBe(4)
+  await $.config.set({ key: 'cc-pr-tracker.maxDone', value: 1 } as any)
+  expect((w.state as any[]).map(p => p.id)).toEqual(['org/repo#7', 'org/repo#10'])
+})
+
 test('Stop watching after: a reopened PR is timed afresh', { options: { stopWhenDone: true, stopAfterMinutes: 10 } }, async ($, on) => {
   const { w, clock } = world(on)
   await start($)

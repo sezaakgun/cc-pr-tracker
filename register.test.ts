@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { DEFAULTS, ONLY_URLS, changeNote, fromRest, isDone, latestPerName, lineOf, linkable, pollMs, prChanges, readCfg, requiredOf, reviewDecisionOf, shouldAlert, statusLine, statusText, stopMs, toCheck, toChecks } from './hooks/register.tsx'
+import { DEFAULTS, ONLY_URLS, changeNote, finishedAt, fromRest, isDone, latestPerName, lineOf, linkable, overCap, pollMs, prChanges, readCfg, requiredOf, reviewDecisionOf, shouldAlert, statusLine, statusText, stopMs, toCheck, toChecks } from './hooks/register.tsx'
 
 const check = (name: string, bucket: string) => ({ key: name, name, bucket, link: '' })
 
@@ -228,4 +228,21 @@ test('isDone and stopMs', () => {
   expect(stopMs(5000)).toBe(1440 * 60_000)
   expect(readCfg({ stopAfterMinutes: 10 })).toEqual({ ...DEFAULTS, stopAfterMinutes: 10 })
   expect(readCfg({ stopAfterMinutes: '10' })).toEqual(DEFAULTS)
+})
+
+test('finishedAt and overCap', () => {
+  const pr = (id: string, state: string, at: Partial<{ mergedAt: string; closedAt: string }> = {}, doneAt?: number) => ({ url: '', id, label: id, pane: id, required: [], others: [], doneAt, view: { number: 1, title: '', state, isDraft: false, mergeable: '', mergeStateStatus: '', reviewDecision: '', ...at } })
+  const a = pr('a', 'MERGED', { mergedAt: '2026-11-01T00:00:00Z' })
+  const b = pr('b', 'CLOSED', { closedAt: '2026-11-03T00:00:00Z' })
+  const c = pr('c', 'MERGED', {}, Date.parse('2026-11-02T00:00:00Z'))
+  const open = pr('o', 'OPEN')
+  expect(finishedAt(a)).toBe(Date.parse('2026-11-01T00:00:00Z'))
+  expect(finishedAt(c)).toBe(Date.parse('2026-11-02T00:00:00Z'))
+  expect(finishedAt(open)).toBe(0)
+  // the oldest finished go; open PRs never count
+  expect(overCap([a, open, b, c], 2).map(p => p.id)).toEqual(['a'])
+  expect(overCap([a, open, b, c], 1).map(p => p.id)).toEqual(['c', 'a'])
+  expect(overCap([a, b, c], 0)).toEqual([])
+  expect(overCap([a, b, c], 5)).toEqual([])
+  expect(readCfg({ maxDone: 3 })).toEqual({ ...DEFAULTS, maxDone: 3 })
 })
