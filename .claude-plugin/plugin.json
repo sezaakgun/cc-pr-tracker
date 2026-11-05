@@ -85,6 +85,12 @@
       "description": "With Stop watching merged or closed PRs on, how long a merged or closed PR keeps its struck-through line first. 0 drops it on the poll that sees it done. 0 to 1440; a value outside is held to the nearer end.",
       "default": 0
     },
+    "showSteps": {
+      "type": "boolean",
+      "title": "Show steps",
+      "description": "Each line shows the PR's own steps as step k/n, a percent and the step it is on: every check on the head commit, the review, the merge queue, the merge, then the jobs and deploys its merge commit set off. A merged PR stays live until those finish green. Adds those fields to the one GraphQL call per poll; not available over REST.",
+      "default": false
+    },
     "maxDone": {
       "type": "number",
       "title": "Keep at most N merged or closed PRs",

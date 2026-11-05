@@ -246,3 +246,9 @@ test('finishedAt and overCap', () => {
   expect(overCap([a, b, c], 5)).toEqual([])
   expect(readCfg({ maxDone: 3 })).toEqual({ ...DEFAULTS, maxDone: 3 })
 })
+
+test('readCfg showSteps', () => {
+  expect(DEFAULTS.showSteps).toBe(false)
+  expect(readCfg({ showSteps: true }).showSteps).toBe(true)
+  expect(readCfg({ showSteps: 'yes' }).showSteps).toBe(false)
+})
