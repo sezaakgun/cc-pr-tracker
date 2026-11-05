@@ -79,6 +79,24 @@
       "description": "A watched PR's line goes away once it is merged or closed, with a toast saying so. Turning this on drops the ones already done.",
       "default": false
     },
+    "stopAfterMinutes": {
+      "type": "number",
+      "title": "Stop watching after (minutes)",
+      "description": "With Stop watching merged or closed PRs on, how long a merged or closed PR keeps its struck-through line first. 0 drops it on the poll that sees it done. 0 to 1440; a value outside is held to the nearer end.",
+      "default": 0
+    },
+    "showSteps": {
+      "type": "boolean",
+      "title": "Show steps",
+      "description": "Each line shows the PR's own steps as step k/n, a percent and the step it is on: every check on the head commit, the review, the merge queue, the merge, then the jobs and deploys its merge commit set off. A merged PR stays live until those finish green. Adds those fields to the one GraphQL call per poll; not available over REST.",
+      "default": false
+    },
+    "maxDone": {
+      "type": "number",
+      "title": "Keep at most N merged or closed PRs",
+      "description": "When more PRs than this are merged or closed, the ones that finished first stop being watched, with a toast; open PRs never count. Works with or without Stop watching merged or closed PRs. 0 keeps them all.",
+      "default": 0
+    },
     "allChecks": {
       "type": "boolean",
       "title": "Count all checks",

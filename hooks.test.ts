@@ -414,6 +414,122 @@ test('turning Stop watching merged or closed PRs on drops the ones already done'
   expect(await status($)).toContain('No PRs are watched')
 })
 
+test('Stop watching after 10 minutes: a merged PR keeps its line, alerts, and goes at 10 minutes', { options: { stopWhenDone: true, stopAfterMinutes: 10 } }, async ($, on) => {
+  const { w, clock } = world(on)
+  await start($)
+  await $.prompt.submit({ text: `${PR} https://github.com/org/repo/pull/8`, wait: false })
+  w.respond = argv => argv.includes('n=7') ? gql({ state: 'MERGED', mergeStateStatus: 'UNKNOWN' }, [run('lint', 'SUCCESS')]) : gql()
+  await clock.advance(60_000)
+  // the poll that sees it merged still alerts, and the line stays, struck through
+  expect(w.toasts).toEqual(['repo#7 lint: pending → pass'])
+  expect(await texts(await band($, 'terminal'))).toContain(' merged')
+  await clock.advance(10 * 60_000 - 1)
+  expect(w.toasts).toEqual(['repo#7 lint: pending → pass'])
+  await clock.advance(1)
+  expect(w.toasts).toEqual(['repo#7 lint: pending → pass', 'repo#7 merged · stopped watching'])
+  // the open PR beside it stays
+  expect((w.state as any[]).map(p => p.id)).toEqual(['org/repo#8'])
+})
+
+test('turning Stop watching on later times a PR merged earlier from then, not from its merge', { options: { stopAfterMinutes: 1 } }, async ($, on) => {
+  const { w, clock } = world(on)
+  await start($)
+  await $.prompt.submit({ text: PR, wait: false })
+  w.response = gql({ state: 'MERGED', mergeStateStatus: 'UNKNOWN' })
+  await clock.advance(60_000)
+  await clock.advance(5 * 60_000)
+  await $.config.set({ key: 'cc-pr-tracker.stopWhenDone', value: true } as any)
+  expect((w.state as any[]).map(p => p.id)).toEqual(['org/repo#7'])
+  await clock.advance(60_000)
+  expect((w.state as any[]).map(p => p.id)).toEqual([])
+})
+
+test('Keep at most 1 merged or closed PR: the one that finished first goes, open PRs stay', { options: { maxDone: 1 } }, async ($, on) => {
+  const { w, clock } = world(on)
+  await start($)
+  await $.prompt.submit({ text: `${PR} https://github.com/org/repo/pull/8 https://github.com/org/repo/pull/9`, wait: false })
+  await $.tool.call({ tool: TOOL })
+  w.respond = argv => argv.includes('n=7') ? gql({ state: 'MERGED', mergeStateStatus: 'UNKNOWN', mergedAt: '2026-11-01T00:00:00Z' })
+    : argv.includes('n=8') ? gql({ state: 'CLOSED', mergeStateStatus: 'UNKNOWN', closedAt: '2026-11-02T00:00:00Z' }) : gql()
+  await clock.advance(60_000)
+  expect((w.state as any[]).map(p => p.id)).toEqual(['org/repo#8', 'org/repo#9'])
+  expect(w.toasts).toContain('repo#7 merged · stopped watching')
+  expect(w.toasts.filter(t => t.includes('stopped watching'))).toEqual(['repo#7 merged · stopped watching'])
+})
+
+test('lowering Keep at most in /config drops the oldest done PRs at once, with Stop watching off', async ($, on) => {
+  const { w } = world(on)
+  w.respond = argv => argv.includes('n=7') ? gql({ state: 'MERGED', mergeStateStatus: 'UNKNOWN', mergedAt: '2026-11-03T00:00:00Z' })
+    : argv.includes('n=8') ? gql({ state: 'MERGED', mergeStateStatus: 'UNKNOWN', mergedAt: '2026-11-01T00:00:00Z' })
+    : argv.includes('n=9') ? gql({ state: 'CLOSED', mergeStateStatus: 'UNKNOWN', closedAt: '2026-11-02T00:00:00Z' }) : gql()
+  await start($)
+  await $.prompt.submit({ text: `${PR} https://github.com/org/repo/pull/8 https://github.com/org/repo/pull/9 https://github.com/org/repo/pull/10`, wait: false })
+  await $.tool.call({ tool: TOOL })
+  expect((w.state as any[]).length).toBe(4)
+  await $.config.set({ key: 'cc-pr-tracker.maxDone', value: 1 } as any)
+  expect((w.state as any[]).map(p => p.id)).toEqual(['org/repo#7', 'org/repo#10'])
+})
+
+test('Stop watching after: a reopened PR is timed afresh', { options: { stopWhenDone: true, stopAfterMinutes: 10 } }, async ($, on) => {
+  const { w, clock } = world(on)
+  await start($)
+  await $.prompt.submit({ text: PR, wait: false })
+  w.response = gql({ state: 'CLOSED', mergeStateStatus: 'UNKNOWN' })
+  await clock.advance(60_000)
+  w.response = gql()
+  await clock.advance(5 * 60_000)
+  expect((w.state as any[])[0].doneAt).toBeUndefined()
+  await clock.advance(10 * 60_000)
+  expect(await status($)).toContain('org/repo#7')
+})
+
+test('a hot reload under Stop watching after drops the PRs whose time ran out and keeps the rest', { options: { stopWhenDone: true, stopAfterMinutes: 10 } }, async ($, on) => {
+  const { w, clock } = world(on)
+  const kept = (num: number, state: string, doneAt?: number) => ({
+    url: `https://github.com/org/repo/pull/${num}`, id: `org/repo#${num}`, label: `repo#${num}`, pane: `pr-repo-${num}`, required: [], others: [], updated: 0, doneAt,
+    view: { number: num, title: 'Kept', state, isDraft: false, mergeable: 'UNKNOWN', mergeStateStatus: 'UNKNOWN', reviewDecision: '' },
+  })
+  await clock.advance(700_000)
+  w.respond = argv => argv.includes('n=8') ? gql({ state: 'CLOSED', mergeStateStatus: 'UNKNOWN' }) : gql()
+  w.state = [kept(7, 'MERGED', 0), kept(8, 'CLOSED', 650_000), kept(9, 'OPEN')]
+  await start($)
+  expect((w.state as any[]).map(p => p.id)).toEqual(['org/repo#8', 'org/repo#9'])
+  expect(w.gh).toBe(0)
+  // #8's ten minutes end at 1_250_000
+  await clock.advance(549_999)
+  expect((w.state as any[]).map(p => p.id)).toEqual(['org/repo#8', 'org/repo#9'])
+  await clock.advance(1)
+  expect((w.state as any[]).map(p => p.id)).toEqual(['org/repo#9'])
+})
+
+test('/pr-clear stops watching every merged or closed PR and keeps the open ones', async ($, on) => {
+  const store: Record<string, unknown> = {}
+  const { w } = world(on, store)
+  w.respond = argv => argv.includes('n=7') ? gql({ state: 'MERGED', mergeStateStatus: 'UNKNOWN' }) : argv.includes('n=8') ? gql({ state: 'CLOSED', mergeStateStatus: 'UNKNOWN' }) : gql()
+  await start($)
+  await $.prompt.submit({ text: `${PR} https://github.com/org/repo/pull/8 https://github.com/org/repo/pull/9`, wait: false })
+  const clear = async () => ((await $.command.run({ command: 'pr-clear', args: '' })) as any).text as string
+  expect(await clear()).toBe('stopped watching 2 merged or closed PRs')
+  expect((w.state as any[]).map(p => p.id)).toEqual(['org/repo#9'])
+  expect((store['session:s1'] as any).prs.map((p: any) => p.url)).toEqual(['https://github.com/org/repo/pull/9'])
+  expect(await clear()).toBe('stopped watching 0 merged or closed PRs')
+})
+
+for (const surface of ['terminal', 'desktop']) {
+  test(`on ${surface}, only done lines carry "clear done", and pressing it leaves the open PR`, async ($, on) => {
+    const { w } = world(on)
+    w.respond = argv => argv.includes('n=7') ? gql({ state: 'MERGED', mergeStateStatus: 'UNKNOWN' }) : argv.includes('n=8') ? gql({ state: 'CLOSED', mergeStateStatus: 'UNKNOWN' }) : gql()
+    await start($)
+    await $.prompt.submit({ text: `${PR} https://github.com/org/repo/pull/8 https://github.com/org/repo/pull/9`, wait: false })
+    const ui = await band($, surface)
+    const buttons = (await ui.findAll({ type: 'Button' })).filter((b: any) => b.key.startsWith('clear:'))
+    expect(buttons.map((b: any) => b.key)).toEqual(['clear:pr-repo-7', 'clear:pr-repo-8'])
+    expect(buttons.map((b: any) => b.props.label)).toEqual(['clear done (2)', 'clear done (2)'])
+    await ui.press({ key: 'clear:pr-repo-8' })
+    expect((await ui.findAll({ type: 'Link' })).map((l: any) => l.text)).toEqual(['repo#9'])
+  })
+}
+
 test('Count all checks: an optional check failing counts and alerts', { options: { allChecks: true } }, async ($, on) => {
   const { w, clock } = world(on)
   w.response = gql({}, [run('lint', 'SUCCESS'), run('docs', null, false)])
@@ -657,3 +773,119 @@ for (const surface of SURFACES) {
     expect(await status($)).toContain('org/repo#7')
   })
 }
+
+// Show steps: the PR's own steps, then what its merge commit set off
+
+const afterMerge = (conclusion: string | null) => ({
+  mergedAt: '1970-01-01T00:00:00Z',
+  mergeCommit: { checkSuites: { nodes: [{ app: { slug: 'github-actions' }, workflowRun: { event: 'push', workflow: { name: 'Publish' } }, checkRuns: { nodes: [
+    { name: 'publish', status: conclusion ? 'COMPLETED' : 'IN_PROGRESS', conclusion, startedAt: '1970-01-01T00:00:30Z', completedAt: conclusion ? '1970-01-01T00:01:30Z' : null, detailsUrl: 'https://github.com/org/repo/actions/runs/9/job/1' },
+  ] } }] }, deployments: { nodes: [] } },
+})
+const merged = (conclusion: string | null) => gql({ state: 'MERGED', mergeStateStatus: 'UNKNOWN', reviewDecision: null, ...afterMerge(conclusion) }, [run('lint', 'SUCCESS')])
+const watchedIds = (w: any) => (w.state as any[]).map(p => p.id)
+const queries = (w: any) => w.runs.filter((a: string[]) => a[0] === 'gh').map((a: string[]) => a.find(x => x.startsWith('query=')) ?? '')
+
+test('Show steps off (the default): the query and the line are as before', async ($, on) => {
+  const { w } = world(on)
+  w.response = gql({}, [run('lint', 'SUCCESS'), run('e2e', null)])
+  await start($)
+  await $.prompt.submit({ text: PR, wait: false })
+  expect(queries(w).every((q: string) => !q.includes('mergeCommit') && !q.includes('mergeQueueEntry'))).toBe(true)
+  const shown = await texts(await band($, 'terminal'))
+  expect(shown).toContain('✓1')
+  expect(shown).not.toContain('step ')
+})
+
+test('Show steps: the line shows step k/n, the percent and the current step; a failing optional check does not count', { options: { showSteps: true } }, async ($, on) => {
+  const { w } = world(on)
+  w.response = gql({}, [run('lint', 'SUCCESS'), run('e2e', null), run('docs', 'FAILURE', false)])
+  await start($)
+  await $.prompt.submit({ text: PR, wait: false })
+  expect(queries(w).every((q: string) => q.includes('mergeCommit'))).toBe(true)
+  const shown = await texts(await band($, 'terminal'))
+  for (const part of ['blocked', 'review required', 'step 1/4', '25%', 'e2e ●', '(+1 optional ✗)', 'Fix it']) expect(shown).toContain(part)
+  expect(shown).not.toContain('✓1')
+  expect(await status($)).toContain('step 1/4 · 25% · e2e')
+})
+
+test('Show steps: a merged PR stays live while its deploy runs, then is struck and goes after Stop watching after', { options: { showSteps: true, stopWhenDone: true, stopAfterMinutes: 10 } }, async ($, on) => {
+  const { w, clock } = world(on)
+  await start($)
+  await $.prompt.submit({ text: PR, wait: false })
+  w.response = merged(null)
+  await clock.advance(60_000)
+  const live = await band($, 'terminal')
+  for (const part of ['merged', 'step 2/3', 'Publish: publish ●']) expect(await texts(live)).toContain(part)
+  expect((await live.findAll({ type: 'Text' })).filter((t: any) => t.props.strikethrough)).toEqual([])
+  // still polled while the deploy runs
+  const before = w.gh
+  await clock.advance(60_000)
+  expect(w.gh).toBe(before + 1)
+  // green: struck through with an alert, no longer polled, gone ten minutes later
+  w.response = merged('SUCCESS')
+  await clock.advance(60_000)
+  const struck = (await (await band($, 'terminal')).findAll({ type: 'Text' })).filter((t: any) => t.props.strikethrough).map((t: any) => t.text).join('|')
+  expect(struck).toContain('3/3')
+  expect(w.toasts.some(t => t.includes('after-merge runs: all green'))).toBe(true)
+  const polls = w.gh
+  await clock.advance(600_000 - 1)
+  expect(w.gh).toBe(polls)
+  expect(watchedIds(w)).toEqual(['org/repo#7'])
+  await clock.advance(1)
+  expect(watchedIds(w)).toEqual([])
+  expect(w.toasts).toContain('repo#7 merged · stopped watching')
+})
+
+test('Show steps: a failed deploy keeps the PR live and alerts; /pr-clear leaves it until a re-run goes green', { options: { showSteps: true } }, async ($, on) => {
+  const { w, clock } = world(on)
+  await start($)
+  await $.prompt.submit({ text: PR, wait: false })
+  w.response = merged(null)
+  await clock.advance(60_000)
+  w.response = merged('FAILURE')
+  await clock.advance(60_000)
+  const shown = await texts(await band($, 'terminal'))
+  for (const part of ['deploy failed', 'Publish: publish ✗']) expect(shown).toContain(part)
+  expect(w.toasts.some(t => t.includes('Publish: publish: running → fail'))).toBe(true)
+  await clock.advance(3_600_000)
+  expect(((await $.command.run({ command: 'pr-clear', args: '' })) as any).text).toBe('stopped watching 0 merged or closed PRs')
+  w.response = merged('SUCCESS')
+  await clock.advance(60_000)
+  expect(await status($)).toContain('step 3/3 · 100%')
+})
+
+test('Show steps: the next PR in the repo shows the last merge\'s after-merge steps as expected', { options: { showSteps: true } }, async ($, on) => {
+  const store: Record<string, unknown> = {}
+  const { w, clock } = world(on, store)
+  await start($)
+  await $.prompt.submit({ text: PR, wait: false })
+  w.response = merged('SUCCESS')
+  await clock.advance(60_000)
+  expect(store['aftermerge:org/repo']).toEqual(['Publish: publish'])
+  expect((store['durations:org/repo'] as any)['Publish: publish']).toEqual([60_000])
+  w.respond = argv => argv.includes('n=8') ? gql({ number: 8, reviewDecision: null }, [run('lint', 'SUCCESS')]) : w.response
+  await $.prompt.submit({ text: 'https://github.com/org/repo/pull/8', wait: false })
+  const text = await status($, 'org/repo#8')
+  expect(text).toContain('waiting (expected) after merge: Publish: publish')
+  expect(text).toContain('step 1/3')
+})
+
+test('Show steps: the details pane lists every step', { options: { showSteps: true } }, async ($, on) => {
+  const { w } = world(on)
+  w.response = gql({}, [run('lint', 'SUCCESS'), run('e2e', null)])
+  await start($)
+  await $.prompt.submit({ text: PR, wait: false })
+  const pane = await $.ui.mount({ plugin: 'cc-pr-tracker', surface: 'terminal', component: 'Pane', requestId: 'pr-repo-7', props: { title: 'org/repo#7', isFocused: true, bodyColumns: 80 } as any, viewport: { columns: 80, rows: 30 } })
+  const shown = await texts(pane)
+  for (const part of ['Steps · step 1/4 · 25% · e2e', 'checks · ', 'review · ', 'merge · ']) expect(shown).toContain(part)
+})
+
+test('Show steps: drawing the band spawns no process', { options: { showSteps: true } }, async ($, on) => {
+  const { w } = world(on)
+  await start($)
+  await $.prompt.submit({ text: PR, wait: false })
+  const runs = w.runs.length
+  for (let i = 0; i < 5; i++) await texts(await band($, 'terminal'))
+  expect(w.runs.length).toBe(runs)
+})
