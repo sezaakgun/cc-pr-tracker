@@ -22,7 +22,7 @@ const gql = (pr: Record<string, unknown> = {}, checks = [run('lint', null)]) => 
 // the engine beneath the plugin; `w` records what the plugin did and `w.response` is what gh prints
 // `old`: a build before 2.1.289, where $.session.root and $.ui.copy answer nothing
 function world(on: any, store: Record<string, unknown> = {}, { old = false } = {}) {
-  const w = { gh: 0, toasts: [] as string[], response: gql(), logs: [] as string[], opened: [] as Record<string, unknown>[], closed: [] as string[], copied: [] as { text: string; surface?: string }[], copyResult: { isCopied: true } as Record<string, unknown>, ghError: '', bashStdout: '', runs: [] as string[][], notes: [] as string[], surfaces: ['terminal'] as string[], status: [] as (string | undefined)[], hold: undefined as Promise<void> | undefined, state: undefined as unknown, sessionId: 's1', respond: (argv: string[]) => w.response, refuse: (_argv: string[]) => '' }
+  const w = { gh: 0, toasts: [] as string[], response: gql(), logs: [] as string[], opened: [] as Record<string, unknown>[], closed: [] as string[], copied: [] as { text: string; surface?: string }[], copyResult: { isCopied: true } as Record<string, unknown>, ghError: '', bashStdout: '', runs: [] as string[][], notes: [] as string[], surfaces: ['terminal'] as string[], status: [] as (string | undefined)[], hold: undefined as Promise<void> | undefined, surfacesHold: undefined as Promise<void> | undefined, state: undefined as unknown, sessionId: 's1', respond: (argv: string[]) => w.response, refuse: (_argv: string[]) => '' }
   const clock = mock.clock(on)
   // $.store over `store` itself, so a test reads what the plugin wrote
   on('store.get', async (_$: unknown, e: any) => ({ value: store[e.key] }))
@@ -44,7 +44,7 @@ function world(on: any, store: Record<string, unknown> = {}, { old = false } = {
     on('session.id', async () => ({ value: w.sessionId }))
     on('state.get', async () => ({ value: { value: w.state, version: 0 } }))
     on('state.set', async (_$: unknown, e: any) => { w.state = e.value; return { value: { isSet: true, version: 1 } } })
-    on('session.surfaces', async () => ({ value: w.surfaces }))
+    on('session.surfaces', async () => { if (w.surfacesHold) await w.surfacesHold; return { value: w.surfaces } })
     on('ui.status', async (_$: unknown, e: any) => { w.status.push(e.text); return { value: undefined } })
     on('command.register', async (_$: unknown, e: any) => ({ value: { command: e.name } }))
   }
@@ -442,6 +442,47 @@ test('turning Stop watching on later times a PR merged earlier from then, not fr
   expect((w.state as any[]).map(p => p.id)).toEqual(['org/repo#7'])
   await clock.advance(60_000)
   expect((w.state as any[]).map(p => p.id)).toEqual([])
+})
+
+test('two PRs expiring together and an overlapping sweep: each "stopped watching" toasts once', { options: { stopWhenDone: true, stopAfterMinutes: 1 } }, async ($, on) => {
+  const { w, clock } = world(on)
+  await start($)
+  await $.prompt.submit({ text: `${PR} https://github.com/org/repo/pull/8 https://github.com/org/repo/pull/9`, wait: false })
+  w.respond = argv => argv.includes('n=9') ? gql() : gql({ state: 'MERGED', mergeStateStatus: 'UNKNOWN' })
+  await clock.advance(60_000)
+  // #7 and #8 run out at 120s; the poll at 120s sees #9 close, which starts a second sweep while
+  // the first is still waiting on $.session.surfaces
+  let release = () => {}
+  w.surfacesHold = new Promise<void>(r => { release = r })
+  w.respond = argv => argv.includes('n=9') ? gql({ state: 'CLOSED', mergeStateStatus: 'UNKNOWN' }) : gql({ state: 'MERGED', mergeStateStatus: 'UNKNOWN' })
+  await clock.advance(60_000)
+  release()
+  w.surfacesHold = undefined
+  await clock.advance(0)
+  for (let i = 0; i < 20; i++) await Promise.resolve()
+  const stopped = w.toasts.filter(t => t.includes('stopped watching'))
+  expect(stopped.sort()).toEqual(['repo#7 merged · stopped watching', 'repo#8 merged · stopped watching'])
+})
+
+test('lowering Keep at most twice while the first cap is still toasting drops each PR once', async ($, on) => {
+  const { w } = world(on)
+  // #7 finished first, #10 last
+  w.respond = argv => { const n = Number(argv.find(a => a.startsWith('n='))?.slice(2)); return gql({ state: 'MERGED', mergeStateStatus: 'UNKNOWN', mergedAt: `2026-11-0${n - 6}T00:00:00Z` }) }
+  await start($)
+  await $.prompt.submit({ text: `${PR} https://github.com/org/repo/pull/8 https://github.com/org/repo/pull/9 https://github.com/org/repo/pull/10`, wait: false })
+  await $.tool.call({ tool: TOOL })
+  let release = () => {}
+  w.surfacesHold = new Promise<void>(r => { release = r })
+  // the first cap drops #7 and #8 and waits on $.session.surfaces after #7; the second drops #8 and #9
+  const first = $.config.set({ key: 'cc-pr-tracker.maxDone', value: 2 } as any)
+  for (let i = 0; i < 20; i++) await Promise.resolve()
+  const second = $.config.set({ key: 'cc-pr-tracker.maxDone', value: 1 } as any)
+  for (let i = 0; i < 20; i++) await Promise.resolve()
+  release()
+  w.surfacesHold = undefined
+  await Promise.all([first, second])
+  expect(w.toasts.filter(t => t.includes('stopped watching')).sort()).toEqual(['repo#7 merged · stopped watching', 'repo#8 merged · stopped watching', 'repo#9 merged · stopped watching'])
+  expect((w.state as any[]).map(p => p.id)).toEqual(['org/repo#10'])
 })
 
 test('Keep at most 1 merged or closed PR: the one that finished first goes, open PRs stay', { options: { maxDone: 1 } }, async ($, on) => {

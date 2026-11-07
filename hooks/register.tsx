@@ -513,7 +513,8 @@ export const register: Register = (on, options) => {
       const now = await $.clock.now(), keep = stopMs(cfg.stopAfterMinutes)
       let soonest: number | undefined
       for (const pr of [...prs.values()]) {
-        if (!isDone(pr)) continue
+        // the loop walks a snapshot: skip a PR another sweep already dropped during the await below
+        if (!isDone(pr) || !prs.has(pr.id)) continue
         if (all) pr.doneAt ??= now
         if (pr.doneAt === undefined) continue
         const left = pr.doneAt + keep - now
@@ -532,7 +533,8 @@ export const register: Register = (on, options) => {
     }
     capDone = async (quiet = false) => {
       for (const pr of overCap([...prs.values()], cfg.maxDone)) {
-        // stop first, as in sweep: a cap started during the await below skips it
+        // as in sweep: skip a PR an overlapping cap already dropped, and stop first so the next one skips this
+        if (!prs.has(pr.id)) continue
         stop?.(pr)
         if (quiet) continue
         const text = `${pr.label} ${pr.view?.state.toLowerCase()} · stopped watching`
