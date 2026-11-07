@@ -104,10 +104,21 @@ export function discoverSteps(i: StepInput): Step[] {
     const wf = s.workflowRun?.workflow?.name ?? s.app?.slug ?? undefined
     for (const r of s.checkRuns.nodes) {
       const name = clean(afterMergeName(wf, r.name))
-      after.push({ key: `after:${name}`, name, phase: 'after merge', state: runState(r.status, r.conclusion, r.startedAt), startedAt: r.startedAt ?? undefined, completedAt: r.completedAt ?? undefined, link: r.detailsUrl })
+      // after the merge a cancelled run (cancel-in-progress when the next merge lands) failed nothing;
+      // on the head commit it still counts as failed, since GitHub blocks the merge on it
+      const state = r.conclusion === 'CANCELLED' ? 'skipped' : runState(r.status, r.conclusion, r.startedAt)
+      after.push({ key: `after:${name}`, name, phase: 'after merge', state, startedAt: r.startedAt ?? undefined, completedAt: r.completedAt ?? undefined, link: r.detailsUrl })
     }
   }
-  for (const d of i.deployments ?? []) {
+  // a re-run job or a re-deploy to the same environment replaces the earlier attempt: keep the newest
+  // (a re-run not started yet has no start time, and is the newest)
+  const latest = new Map<string, Step>()
+  for (const s of after) { const had = latest.get(s.key); if (!had || (s.startedAt ?? '\uffff') >= (had.startedAt ?? '\uffff')) latest.set(s.key, s) }
+  after.length = 0
+  after.push(...latest.values())
+  const deploys = new Map<string, Deployment>()
+  for (const d of i.deployments ?? []) { const env = d.environment ?? '', had = deploys.get(env); if (!had || (d.createdAt ?? '') >= (had.createdAt ?? '')) deploys.set(env, d) }
+  for (const d of deploys.values()) {
     const name = clean(`deploy ${d.environment ?? ''}`.trim())
     const state = deploymentState(d.latestStatus?.state)
     after.push({ key: `after:${name}`, name, phase: 'after merge', state, startedAt: d.createdAt ?? undefined, completedAt: state === 'done' || state === 'failed' ? d.latestStatus?.createdAt ?? undefined : undefined })
@@ -203,4 +214,4 @@ export function stepLabel(p: Progress): string {
   return `step ${p.k}/${p.n} · ${p.pct}%${p.current ? ` · ${p.current.name}` : ''}`
 }
 export const STEP_ICON: Record<StepState, [string, string]> = { done: ['✓', 'green'], running: ['●', 'yellow'], waiting: ['○', 'gray'], failed: ['✗', 'red'], skipped: ['–', 'gray'] }
-export const fmtDuration = (ms: number) => ms < 60_000 ? `${Math.round(ms / 1000)}s` : `${Math.floor(ms / 60_000)}m${String(Math.round((ms % 60_000) / 1000)).padStart(2, '0')}s`
+export const fmtDuration = (ms: number) => { const s = Math.round(ms / 1000); return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m${String(s % 60).padStart(2, '0')}s` }

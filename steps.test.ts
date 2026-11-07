@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { AFTER_MERGE_GRACE_MS, afterMergeChanges, afterMergeNames, discoverSteps, median, progress, recordDurations, runState, stepLabel } from './hooks/steps'
+import { AFTER_MERGE_GRACE_MS, afterMergeChanges, afterMergeNames, discoverSteps, fmtDuration, median, progress, recordDurations, runState, stepLabel } from './hooks/steps'
 import type { HeadContext, Step, StepInput, Suite } from './hooks/steps'
 
 // a PR's steps mirror what GitHub reports for it, one fixture per repo shape
@@ -26,6 +26,7 @@ test('runState: GitHub run status and conclusion to a step state', () => {
   expect(runState('COMPLETED', 'SKIPPED')).toBe('skipped')
   expect(runState('COMPLETED', 'FAILURE')).toBe('failed')
   expect(runState('COMPLETED', 'CANCELLED')).toBe('failed')
+  expect(runState('COMPLETED', 'TIMED_OUT')).toBe('failed')
 })
 
 test('shape: checks only (no review rule, no queue, no deploy): the steps end at merge', () => {
@@ -174,4 +175,41 @@ test('afterMergeChanges: a failed after-merge job alerts once; all green alerts 
   expect(afterMergeChanges(red, red).changes).toEqual([])
   expect(afterMergeChanges(running, green).changes).toEqual(['after-merge runs: all green'])
   expect(afterMergeChanges(green, green).changes).toEqual([])
+})
+
+test('a cancelled after-merge run is skipped: the merge settles on the rest; a cancelled head check still fails', () => {
+  const open = discoverSteps(base({ head: [check('lint', 'SUCCESS', 1), check('test', 'CANCELLED', 1)] }))
+  expect(progress(open, NOW).failed?.name).toBe('test')
+  const steps = discoverSteps(base({ state: 'MERGED', mergedAt: T(10), suites: [suite('test', [['test', 'CANCELLED', 11]]), suite('Publish', [['publish', 'SUCCESS', 11]])] }))
+  expect(progress(steps, NOW, {}, T(10))).toMatchObject({ settled: true, afterMergeFailed: false, pct: 100 })
+})
+
+test('a re-deploy to the same environment replaces the failed one; other environments stay', () => {
+  const steps = discoverSteps(base({
+    state: 'MERGED', mergedAt: T(10),
+    deployments: [
+      { environment: 'production', createdAt: T(12), latestStatus: { state: 'FAILURE', createdAt: T(14) } },
+      { environment: 'production', createdAt: T(16), latestStatus: { state: 'SUCCESS', createdAt: T(18) } },
+      { environment: 'preview', createdAt: T(11), latestStatus: { state: 'SUCCESS', createdAt: T(12) } },
+    ],
+  }))
+  expect(names(steps.filter(s => s.phase === 'after merge'))).toEqual(['after merge:deploy preview:done', 'after merge:deploy production:done'])
+  expect(progress(steps, NOW, {}, T(10))).toMatchObject({ settled: true, afterMergeFailed: false })
+  // the newest one failing still fails, whatever came before
+  const red = discoverSteps(base({ state: 'MERGED', mergedAt: T(10), deployments: [
+    { environment: 'production', createdAt: T(12), latestStatus: { state: 'SUCCESS', createdAt: T(14) } },
+    { environment: 'production', createdAt: T(16), latestStatus: { state: 'FAILURE', createdAt: T(18) } },
+  ] }))
+  expect(progress(red, NOW, {}, T(10))).toMatchObject({ settled: false, afterMergeFailed: true })
+})
+
+test('a re-run job replaces its failed attempt, a queued re-run included', () => {
+  const green = discoverSteps(base({ state: 'MERGED', mergedAt: T(10), suites: [suite('Publish', [['publish', 'FAILURE', 11], ['publish', 'SUCCESS', 20]])] }))
+  expect(names(green.filter(s => s.phase === 'after merge'))).toEqual(['after merge:Publish: publish:done'])
+  const queued = discoverSteps(base({ state: 'MERGED', mergedAt: T(10), suites: [suite('Publish', [['publish', 'FAILURE', 11], ['publish', null, null]])] }))
+  expect(names(queued.filter(s => s.phase === 'after merge'))).toEqual(['after merge:Publish: publish:waiting'])
+})
+
+test('fmtDuration never shows 60s or 1m60s', () => {
+  expect([fmtDuration(59_400), fmtDuration(59_600), fmtDuration(60_000), fmtDuration(119_600), fmtDuration(125_000)]).toEqual(['59s', '1m00s', '1m00s', '2m00s', '2m05s'])
 })

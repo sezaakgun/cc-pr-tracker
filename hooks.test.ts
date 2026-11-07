@@ -878,7 +878,7 @@ test('Show steps: a merged PR stays live while its deploy runs, then is struck a
   expect(w.toasts).toContain('repo#7 merged · stopped watching')
 })
 
-test('Show steps: a failed deploy keeps the PR live and alerts; /pr-clear leaves it until a re-run goes green', { options: { showSteps: true } }, async ($, on) => {
+test('Show steps: a failed after-merge run keeps the PR live and alerts, until a re-run goes green', { options: { showSteps: true } }, async ($, on) => {
   const { w, clock } = world(on)
   await start($)
   await $.prompt.submit({ text: PR, wait: false })
@@ -887,13 +887,27 @@ test('Show steps: a failed deploy keeps the PR live and alerts; /pr-clear leaves
   w.response = merged('FAILURE')
   await clock.advance(60_000)
   const shown = await texts(await band($, 'terminal'))
-  for (const part of ['deploy failed', 'Publish: publish ✗']) expect(shown).toContain(part)
+  for (const part of ['after-merge failed', 'Publish: publish ✗']) expect(shown).toContain(part)
+  expect(shown).not.toContain('deploy failed')
   expect(w.toasts.some(t => t.includes('Publish: publish: running → fail'))).toBe(true)
   await clock.advance(3_600_000)
-  expect(((await $.command.run({ command: 'pr-clear', args: '' })) as any).text).toBe('stopped watching 0 merged or closed PRs')
+  expect(watchedIds(w)).toEqual(['org/repo#7'])
   w.response = merged('SUCCESS')
   await clock.advance(60_000)
   expect(await status($)).toContain('step 3/3 · 100%')
+})
+
+test('Show steps: /pr-clear and "clear done" also remove a merged PR whose after-merge run failed or waits', { options: { showSteps: true } }, async ($, on) => {
+  const { w, clock } = world(on)
+  await start($)
+  await $.prompt.submit({ text: `${PR} https://github.com/org/repo/pull/8 https://github.com/org/repo/pull/9`, wait: false })
+  // #7 failed after the merge, #8 waits (say, for a deploy approval), #9 is open
+  w.respond = argv => argv.includes('n=7') ? merged('FAILURE') : argv.includes('n=8') ? merged(null) : gql()
+  await clock.advance(60_000)
+  const buttons = (await (await band($, 'terminal')).findAll({ type: 'Button' })).filter((b: any) => b.key.startsWith('clear:'))
+  expect(buttons.map((b: any) => [b.key, b.props.label])).toEqual([['clear:pr-repo-7', 'clear done (2)'], ['clear:pr-repo-8', 'clear done (2)']])
+  expect(((await $.command.run({ command: 'pr-clear', args: '' })) as any).text).toBe('stopped watching 2 merged or closed PRs')
+  expect(watchedIds(w)).toEqual(['org/repo#9'])
 })
 
 test('Show steps: the next PR in the repo shows the last merge\'s after-merge steps as expected', { options: { showSteps: true } }, async ($, on) => {

@@ -237,7 +237,7 @@ export function lineOf(pr: Pr, muted = !!pr.muted, all = false): string {
   if (!v) return `${pr.label} ${pr.error ? `gh failed: ${pr.error}` : 'loading…'}`
   const state = stateOf(v)
   const steps = pr.progress?.n ? stepLabel(pr.progress) : ''
-  if (state === 'merged' && !isDone(pr)) return [`${pr.label} merged`, pr.progress?.afterMergeFailed ? 'deploy failed' : '', steps, v.title].filter(Boolean).join(' · ')
+  if (state === 'merged' && !isDone(pr)) return [`${pr.label} merged`, pr.progress?.afterMergeFailed ? 'after-merge failed' : '', steps, v.title].filter(Boolean).join(' · ')
   if (state === 'merged' || state === 'closed') return `${pr.label} ${state} · ${v.title}`
   const n = (...b: string[]) => counted(pr, all).filter(c => b.includes(c.bucket)).length
   const otherFails = all ? 0 : pr.others.filter(c => c.bucket === 'fail').length
@@ -301,9 +301,12 @@ let sweepTimer: { cancel(): void } | undefined
 // drops the done PRs past "Keep at most N merged or closed PRs"; `quiet` skips the toast
 let capDone: ((quiet?: boolean) => Promise<void>) | undefined
 const dropDone = () => sweep?.(true)
-// /pr-clear and a done line's "clear done" button: every merged or closed PR goes; the count
+// merged or closed, whether or not its after-merge runs settled (a cancelled, waiting or failed run
+// keeps a merged PR live under "Show steps", but asking to clear it is enough)
+const finished = (pr: Pr) => pr.view?.state === 'MERGED' || pr.view?.state === 'CLOSED'
+// /pr-clear and a finished line's "clear done" button: every merged or closed PR goes; the count
 const clearDone = () => {
-  const done = [...prs.values()].filter(isDone)
+  const done = [...prs.values()].filter(finished)
   for (const pr of done) stop?.(pr)
   return done.length
 }
@@ -779,7 +782,7 @@ export const register: Register = (on, options) => {
     if (e.props.hasSurvey || (!flashing && !prs.size)) return next(e)
     const { Box, Text, Link, Button } = await $.ui.resolve(e)
     const cols = e.props.bodyColumns ?? e.viewport?.columns ?? 80
-    const doneCount = [...prs.values()].filter(isDone).length
+    const doneCount = [...prs.values()].filter(finished).length
     return (
       <Box flexDirection="column">
         {flashing ? (
@@ -818,7 +821,7 @@ export const register: Register = (on, options) => {
               ) : afterMerge ? (
               <Text wrap="truncate-end">
                 <Text color="magenta">{' merged'}</Text>
-                <Text color="red">{pr.progress?.afterMergeFailed ? ' · deploy failed' : ''}</Text>
+                <Text color="red">{pr.progress?.afterMergeFailed ? ' · after-merge failed' : ''}</Text>
                 <Text dimColor>{prog ? ` · step ${prog.k}/${prog.n} · ` : ''}</Text>
                 <Text color={pr.progress?.afterMergeFailed ? 'red' : 'cyan'}>{prog ? `${prog.pct}%` : ''}</Text>
                 <Text color={cur ? STEP_ICON[cur.state][1] : 'gray'}>{cur ? ` · ${cur.name} ${STEP_ICON[cur.state][0]}` : ''}</Text>
@@ -848,7 +851,7 @@ export const register: Register = (on, options) => {
                 <Button key={`copy:${pr.pane}`} label="copy" onPress={press => copy?.(pr.url, press.surface)} />
                 <Button key={`mute:${pr.pane}`} label={pr.muted ? 'unmute' : 'mute'} onPress={() => { pr.muted = !pr.muted; save?.(); $.ui.invalidate('ui.render') }} />
                 <Button key={`details:${pr.pane}`} label="details" onPress={() => { $.ui.open({ id: pr.pane, title: pr.id, focus: true, closeOnEscape: true }) }} />
-                {done ? <Button key={`clear:${pr.pane}`} label={`clear done (${doneCount})`} onPress={() => { clearDone() }} /> : <Box />}
+                {finished(pr) ? <Button key={`clear:${pr.pane}`} label={`clear done (${doneCount})`} onPress={() => { clearDone() }} /> : <Box />}
                 <Button key={`stop:${pr.pane}`} label="×" onPress={() => stop?.(pr)} />
               </Box>
             </Box>
