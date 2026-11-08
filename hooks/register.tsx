@@ -1,6 +1,8 @@
 /* @jsx h */
 import type { Register } from 'claude-code'
 import type { Check, Pr, Stored, View, Watched } from '../types'
+import { STEP_ICON, afterMergeChanges, afterMergeNames, discoverSteps, fmtDuration, median, progress, recordDurations, stepLabel } from './steps'
+import type { Deployment, Step, Suite } from './steps'
 
 // A GitHub PR URL in a prompt adds a line above the prompt that polls gh for the merge state and
 // the required checks; a prompt that is only the URL toggles it without a model turn. A PR URL in
@@ -11,7 +13,9 @@ import type { Check, Pr, Stored, View, Watched } from '../types'
 // every new session in the project, under "Remember watched PRs"); a /clear drops the PRs Claude brought in.
 // Where no band is drawn (claude.ai/code on the web, the mobile app) the PRs go to the transcript and
 // the status line instead, and /prs prints them anywhere; a session that refuses GraphQL polls over REST.
-// /pr-clear, or a done line's "clear done" button, drops every merged or closed line at once.
+// /pr-clear, or a done line's "clear done" button, drops every merged or closed line at once. Under
+// "Show steps" each line shows the PR's own steps (checks, review, queue, merge, then the jobs and
+// deploys its merge set off) as step k/n and a percent, and a merged PR stays live until those finish.
 
 const PR_URL = /https:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/pull\/(\d+)/
 // a prompt that is nothing but PR URLs (one or more, any whitespace) toggles them without a model turn
@@ -25,17 +29,24 @@ const STATE = { plugin: 'cc-pr-tracker', key: 'prs' } as const
 const TOOL = 'mcp__cc-pr-tracker__pr_status'
 const SESSION_TTL_MS = 30 * 24 * 3600_000
 
-type Context = { __typename: string; isRequired: boolean; name?: string; status?: string | null; conclusion?: string | null; detailsUrl?: string; startedAt?: string | null; checkSuite?: { app?: { slug?: string } | null; workflowRun?: { event?: string; workflow?: { name?: string } | null } | null } | null; context?: string; state?: string; targetUrl?: string; createdAt?: string | null }
+type Context = { __typename: string; isRequired: boolean; name?: string; status?: string | null; conclusion?: string | null; detailsUrl?: string; startedAt?: string | null; completedAt?: string | null; checkSuite?: { app?: { slug?: string } | null; workflowRun?: { event?: string; workflow?: { name?: string } | null } | null } | null; context?: string; state?: string; targetUrl?: string; createdAt?: string | null }
 
 // one call replaces `gh pr view` plus `gh pr checks`; isRequired is per PR
-const QUERY = `query($o: String!, $r: String!, $n: Int!) {
+// under "Show steps" the same call also asks for the review requests, the merge queue entry, each
+// check's end time, and what the merge commit set off (its workflow jobs and deployments)
+const AFTER_MERGE = `
+    mergeCommit {
+      checkSuites(first: 30) { nodes { app { slug } workflowRun { event workflow { name } } checkRuns(first: 30) { nodes { name status conclusion startedAt completedAt detailsUrl } } } }
+      deployments(first: 20) { nodes { environment createdAt latestStatus { state createdAt } } }
+    }`
+export const queryFor = (steps: boolean) => `query($o: String!, $r: String!, $n: Int!) {
   repository(owner: $o, name: $r) { pullRequest(number: $n) {
-    number title state isDraft mergeable mergeStateStatus reviewDecision mergedAt closedAt
+    number title state isDraft mergeable mergeStateStatus reviewDecision mergedAt closedAt${steps ? ' reviewRequests(first: 1) { totalCount } mergeQueueEntry { position state }' : ''}
     commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes {
       __typename
-      ... on CheckRun { name status conclusion detailsUrl startedAt checkSuite { app { slug } workflowRun { event workflow { name } } } isRequired(pullRequestNumber: $n) }
+      ... on CheckRun { name status conclusion detailsUrl startedAt${steps ? ' completedAt' : ''} checkSuite { app { slug } workflowRun { event workflow { name } } } isRequired(pullRequestNumber: $n) }
       ... on StatusContext { context state targetUrl createdAt isRequired(pullRequestNumber: $n) }
-    } } } } } }
+    } } } } } }${steps ? AFTER_MERGE : ''}
   } }
 }`
 
@@ -106,8 +117,8 @@ export function prChanges(prevMerge: string | undefined, prevBuckets: Map<string
   return out
 }
 
-export type Cfg = { muteAll: boolean; alertOn: string; notifyClaude: boolean; sound: boolean; pollSeconds: number; autoWatch: string; remember: string; stopWhenDone: boolean; stopAfterMinutes: number; maxDone: number; allChecks: boolean; alertOnReview: boolean; flash: boolean; transcript: string }
-export const DEFAULTS: Cfg = { muteAll: false, alertOn: 'every change', notifyClaude: true, sound: true, pollSeconds: 60, autoWatch: 'answers and gh pr create', remember: 'this session', stopWhenDone: false, stopAfterMinutes: 0, maxDone: 0, allChecks: false, alertOnReview: false, flash: true, transcript: 'when no band is drawn' }
+export type Cfg = { muteAll: boolean; alertOn: string; notifyClaude: boolean; sound: boolean; pollSeconds: number; autoWatch: string; remember: string; stopWhenDone: boolean; stopAfterMinutes: number; maxDone: number; showSteps: boolean; allChecks: boolean; alertOnReview: boolean; flash: boolean; transcript: string }
+export const DEFAULTS: Cfg = { muteAll: false, alertOn: 'every change', notifyClaude: true, sound: true, pollSeconds: 60, autoWatch: 'answers and gh pr create', remember: 'this session', stopWhenDone: false, stopAfterMinutes: 0, maxDone: 0, showSteps: false, allChecks: false, alertOnReview: false, flash: true, transcript: 'when no band is drawn' }
 // /config values by field laid over `base`; an unknown field, or a value of the wrong type, is ignored
 export function readCfg(fields: Readonly<Record<string, unknown>>, base: Cfg = DEFAULTS): Cfg {
   const out: Record<string, unknown> = { ...base }
@@ -116,8 +127,10 @@ export function readCfg(fields: Readonly<Record<string, unknown>>, base: Cfg = D
 }
 // one GraphQL call per PR per poll; a webhook if rate limits bite
 export const pollMs = (seconds: number) => Math.min(3600, Math.max(30, Math.round(seconds))) * 1000
-// a merged or closed PR is done: its line is struck through
-export const isDone = (pr: Pr) => pr.view?.state === 'MERGED' || pr.view?.state === 'CLOSED'
+// a merged or closed PR is done: its line is struck through. Under "Show steps" a merged PR whose
+// merge commit's jobs or deploys are still running, or one failed, is not done yet (settled false)
+export const doneState = (state: string | undefined, settled?: boolean) => state === 'CLOSED' || (state === 'MERGED' && settled !== false)
+export const isDone = (pr: Pr) => doneState(pr.view?.state, pr.settled)
 // how long a done PR's line stays under "Stop watching merged or closed PRs": 0 to a day, in minutes
 export const stopMs = (minutes: number) => Math.min(1440, Math.max(0, Math.round(minutes))) * 60_000
 // when a done PR finished: GitHub's own merge or close time, else when a poll saw it done
@@ -169,6 +182,7 @@ export function statusText(pr: Pr, all = false): string {
     ...(all
       ? pr.others.length ? [`  optional checks (${pr.others.length}):`, ...pr.others.map(line)] : []
       : fails.length ? [`  failing optional checks (${fails.length}):`, ...fails.map(line)] : []),
+    ...(pr.steps?.length ? [`  ${pr.progress ? stepLabel(pr.progress) : ''}`, ...pr.steps.map(st => `    ${st.state}${st.expected ? ' (expected)' : ''} ${st.phase}: ${st.name}${st.link ? ` ${st.link}` : ''}`)] : []),
     `  ${pr.others.length} optional checks in all · polled ${pr.updated ? new Date(pr.updated).toISOString() : 'never'}${pr.error ? ` · last refresh failed: ${pr.error}` : ''}`,
   ].join('\n')
 }
@@ -177,6 +191,8 @@ export function statusText(pr: Pr, all = false): string {
 // GraphQL (claude.ai/code's GitHub proxy serves REST alone). REST has no isRequired, so a check is
 // required when the base branch's protection or rulesets name it; no reviewDecision, so it is read
 // off the latest review of each reviewer; and no workflow name or event on a check run.
+// the fields only "Show steps" asks for; absent otherwise and over REST
+type StepsFields = { reviewRequests?: { totalCount: number } | null; mergeQueueEntry?: { position?: number | null; state?: string | null } | null; mergeCommit?: { checkSuites?: { nodes?: unknown[] } | null; deployments?: { nodes?: unknown[] } | null } | null }
 type RestPull = { number: number; title: string; state: string; draft?: boolean; merged_at?: string | null; closed_at?: string | null; mergeable?: boolean | null; mergeable_state?: string; requested_reviewers?: unknown[]; requested_teams?: unknown[] }
 type RestRun = { name: string; status: string; conclusion?: string | null; details_url?: string | null; html_url?: string | null; started_at?: string | null; app?: { slug?: string } | null }
 type RestStatus = { context: string; state: string; target_url?: string | null; created_at?: string | null }
@@ -220,6 +236,8 @@ export function lineOf(pr: Pr, muted = !!pr.muted, all = false): string {
   const v = pr.view
   if (!v) return `${pr.label} ${pr.error ? `gh failed: ${pr.error}` : 'loading…'}`
   const state = stateOf(v)
+  const steps = pr.progress?.n ? stepLabel(pr.progress) : ''
+  if (state === 'merged' && !isDone(pr)) return [`${pr.label} merged`, pr.progress?.afterMergeFailed ? 'after-merge failed' : '', steps, v.title].filter(Boolean).join(' · ')
   if (state === 'merged' || state === 'closed') return `${pr.label} ${state} · ${v.title}`
   const n = (...b: string[]) => counted(pr, all).filter(c => b.includes(c.bucket)).length
   const otherFails = all ? 0 : pr.others.filter(c => c.bucket === 'fail').length
@@ -261,6 +279,10 @@ let poll: { cancel(): void } | undefined
 let startPoll: (() => void) | undefined
 const prs = new Map<string, Pr>()
 const polling = new Map<string, Promise<void>>()
+// under "Show steps", per repo (owner/repo): finished-step durations for the in-step percent, and
+// the after-merge step names of its last settled merge; read from $.store on first use
+const durations = new Map<string, Record<string, number[]>>()
+const expectedAfter = new Map<string, string[]>()
 // built in session.start, where $ is in hand; later hooks call them
 let refresh: ((pr: Pr) => Promise<void>) | undefined
 let stop: ((pr: Pr) => void) | undefined
@@ -279,9 +301,12 @@ let sweepTimer: { cancel(): void } | undefined
 // drops the done PRs past "Keep at most N merged or closed PRs"; `quiet` skips the toast
 let capDone: ((quiet?: boolean) => Promise<void>) | undefined
 const dropDone = () => sweep?.(true)
-// /pr-clear and a done line's "clear done" button: every merged or closed PR goes; the count
+// merged or closed, whether or not its after-merge runs settled (a cancelled, waiting or failed run
+// keeps a merged PR live under "Show steps", but asking to clear it is enough)
+const finished = (pr: Pr) => pr.view?.state === 'MERGED' || pr.view?.state === 'CLOSED'
+// /pr-clear and a finished line's "clear done" button: every merged or closed PR goes; the count
 const clearDone = () => {
-  const done = [...prs.values()].filter(isDone)
+  const done = [...prs.values()].filter(finished)
   for (const pr of done) stop?.(pr)
   return done.length
 }
@@ -395,7 +420,7 @@ export const register: Register = (on, options) => {
     }
     // -f keeps owner and repo as strings (a repo named 2048 would otherwise be sent as a number)
     const viaGraphql = async (owner: string, repo: string, num: string) =>
-      (await gh(['api', 'graphql', '-f', `query=${QUERY}`, '-f', `o=${owner}`, '-f', `r=${repo}`, '-F', `n=${num}`])).data?.repository?.pullRequest
+      (await gh(['api', 'graphql', '-f', `query=${queryFor(cfg.showSteps)}`, '-f', `o=${owner}`, '-f', `r=${repo}`, '-F', `n=${num}`])).data?.repository?.pullRequest
     // four to six REST calls where one GraphQL call is refused; a branch's protection or rulesets
     // the token cannot read leave its checks optional
     const viaRest = async (owner: string, repo: string, num: string) => {
@@ -429,37 +454,76 @@ export const register: Register = (on, options) => {
         }
         if (rest) found = await viaRest(owner, repo, num)
         if (!found) throw new Error('PR not found')
-        const { number, commits, ...view } = found
+        const { number, commits, reviewRequests, mergeQueueEntry, mergeCommit, ...view } = found as ReturnType<typeof fromRest> & StepsFields
         const contexts = latestPerName(commits.nodes[0]?.commit.statusCheckRollup?.contexts.nodes ?? [])
         const prev = pr.view
         const prevMerge = prev?.mergeStateStatus
         const all = cfg.allChecks
         const prevBuckets = new Map(counted(pr, all).map(c => [c.key, c.bucket]))
         const v: View = { number, ...view, title: clean(view.title) }
+        const wasDone = isDone(pr)
+        // "Show steps": the PR's own steps from this same answer (GraphQL only; REST has no merge
+        // commit runs in one call). The repo's history gives the stand-in after-merge steps and the
+        // median durations
+        let settled: boolean | undefined
+        let after: { changes: string[]; failed: Step[] } = { changes: [], failed: [] }
+        if (cfg.showSteps && !rest) {
+          const repoKey = `${owner}/${repo}`
+          if (!durations.has(repoKey)) durations.set(repoKey, ((await attempt('$.store.get', () => $.store.get(`durations:${repoKey}`))) ?? {}) as Record<string, number[]>)
+          if (!expectedAfter.has(repoKey)) expectedAfter.set(repoKey, ((await attempt('$.store.get', () => $.store.get(`aftermerge:${repoKey}`))) ?? []) as string[])
+          if (mergeQueueEntry) pr.sawQueue = true
+          const prevSteps = pr.steps
+          const steps = discoverSteps({
+            state: v.state, mergedAt: v.mergedAt, reviewDecision: v.reviewDecision, reviewRequests: reviewRequests?.totalCount ?? 0,
+            queue: mergeQueueEntry, sawQueue: pr.sawQueue, head: contexts,
+            suites: ((mergeCommit?.checkSuites?.nodes ?? []) as Suite[]).filter(su => su.checkRuns?.nodes?.length),
+            deployments: (mergeCommit?.deployments?.nodes ?? []) as Deployment[],
+            expectedAfter: expectedAfter.get(repoKey),
+          })
+          const hist = recordDurations(durations.get(repoKey) ?? {}, prevSteps, steps)
+          if (JSON.stringify(hist) !== JSON.stringify(durations.get(repoKey))) {
+            durations.set(repoKey, hist)
+            attempt('$.store.set', () => $.store.set(`durations:${repoKey}`, hist))
+          }
+          const prog = progress(steps, await $.clock.now(), hist, v.mergedAt)
+          pr.steps = steps
+          pr.progress = prog
+          settled = v.state === 'OPEN' ? undefined : prog.settled
+          const names = afterMergeNames(steps, prog)
+          if (names && JSON.stringify(names) !== JSON.stringify(expectedAfter.get(repoKey))) {
+            expectedAfter.set(repoKey, names)
+            attempt('$.store.set', () => $.store.set(`aftermerge:${repoKey}`, names))
+          }
+          after = afterMergeChanges(prevSteps, steps)
+        } else { pr.steps = undefined; pr.progress = undefined }
+        const nowDone = doneState(v.state, settled)
         // a PR Claude only mentioned that is already merged or closed is not worth a line
         if (pr.dropIfClosed && prevMerge === undefined && v.state !== 'OPEN') { stop?.(pr); return }
         if (!prs.has(pr.id)) return
         // "Stop watching merged or closed PRs": a PR seen open that is now done leaves the list
         // (with "Stop watching after" above 0 the line stays, struck through, and sweep drops it later)
-        if (cfg.stopWhenDone && stopMs(cfg.stopAfterMinutes) === 0 && prev?.state === 'OPEN' && v.state !== 'OPEN') {
+        if (cfg.stopWhenDone && stopMs(cfg.stopAfterMinutes) === 0 && prev && !wasDone && nowDone) {
           if (!pr.muted && !cfg.muteAll) $.ui.toast(`${pr.label} ${v.state.toLowerCase()} · stopped watching`, { timeoutMs: 5000 })
           if (await inTranscript()) say(`${pr.label} ${v.state.toLowerCase()} · stopped watching`)
           stop?.(pr)
           return
         }
         pr.view = v
+        pr.settled = settled
         const checks = toChecks(contexts)
         pr.required = checks.filter((_, i) => contexts[i].isRequired)
         pr.others = checks.filter((_, i) => !contexts[i].isRequired)
         pr.error = undefined
         // a review decision is compared only under "Alert on review changes"
         const reviewChanged = cfg.alertOnReview && prev !== undefined && prev.reviewDecision !== v.reviewDecision
-        const changes = cfg.alertOnReview
+        const changes = [...(cfg.alertOnReview
           ? prChanges(prevMerge, prevBuckets, v.mergeStateStatus, counted(pr, all), prev?.reviewDecision, v.reviewDecision)
-          : prChanges(prevMerge, prevBuckets, v.mergeStateStatus, counted(pr, all))
+          : prChanges(prevMerge, prevBuckets, v.mergeStateStatus, counted(pr, all))), ...after.changes]
         // a muted PR (or every PR, under muteAll) still updates its line, it just never alerts;
-        // "Alert on" in /config picks which changes alert
-        const newlyFailed = counted(pr, all).filter(c => c.bucket === 'fail' && prevBuckets.get(c.key) !== 'fail')
+        // "Alert on" in /config picks which changes alert. Under "Show steps" a failed after-merge
+        // job or deploy counts as a newly failing check
+        const afterFailed: Check[] = after.failed.map(st => ({ key: st.key, name: st.name, bucket: 'fail', link: st.link ?? '' }))
+        const newlyFailed = [...counted(pr, all).filter(c => c.bucket === 'fail' && prevBuckets.get(c.key) !== 'fail'), ...afterFailed]
         if (!pr.muted && !cfg.muteAll && shouldAlert(cfg.alertOn, changes, newlyFailed.length, prevMerge, v.mergeStateStatus, reviewChanged)) {
           $.ui.toast(`${pr.label} ${changes.join(' · ')}`, { timeoutMs: 8000 })
           alert(newlyFailed.length ? SOUND_FAIL : SOUND_CHANGE)
@@ -473,7 +537,7 @@ export const register: Register = (on, options) => {
         // after any alert: a PR seen open that is now done is timed for "Stop watching after"; one
         // reopened starts over
         if (!isDone(pr)) pr.doneAt = undefined
-        else if (cfg.stopWhenDone && prev?.state === 'OPEN') { pr.doneAt ??= await $.clock.now(); await sweep?.() }
+        else if (cfg.stopWhenDone && prev && !wasDone) { pr.doneAt ??= await $.clock.now(); await sweep?.() }
         if (isDone(pr)) await capDone?.()
       } catch (err) {
         const first = !pr.view && !pr.error
@@ -495,7 +559,7 @@ export const register: Register = (on, options) => {
     }
     startPoll = () => {
       poll?.cancel()
-      poll = $.clock.every(pollMs(cfg.pollSeconds), () => { for (const pr of prs.values()) if (pr.view?.state !== 'MERGED') refresh?.(pr) })
+      poll = $.clock.every(pollMs(cfg.pollSeconds), () => { for (const pr of prs.values()) if (pr.view?.state !== 'MERGED' || pr.settled === false) refresh?.(pr) })
     }
     startPoll()
 
@@ -607,6 +671,11 @@ export const register: Register = (on, options) => {
     if (cfg.stopWhenDone !== before.stopWhenDone || cfg.stopAfterMinutes !== before.stopAfterMinutes) await dropDone()
     // a lower "Keep at most N merged or closed PRs" drops the oldest done PRs at once
     if (cfg.maxDone !== before.maxDone) await capDone?.()
+    // "Show steps" on: every PR is polled now with the wider query; off: back to the plain lines
+    if (cfg.showSteps !== before.showSteps) {
+      if (!cfg.showSteps) for (const pr of prs.values()) { pr.steps = undefined; pr.progress = undefined; pr.settled = undefined }
+      else for (const pr of prs.values()) refresh?.(pr)
+    }
     // the list moves to where "Remember watched PRs" now keeps it, at once
     if (cfg.remember !== before.remember) { storeKey = await keyOf?.(); save?.() }
     $.ui.invalidate('ui.render')
@@ -713,7 +782,7 @@ export const register: Register = (on, options) => {
     if (e.props.hasSurvey || (!flashing && !prs.size)) return next(e)
     const { Box, Text, Link, Button } = await $.ui.resolve(e)
     const cols = e.props.bodyColumns ?? e.viewport?.columns ?? 80
-    const doneCount = [...prs.values()].filter(isDone).length
+    const doneCount = [...prs.values()].filter(finished).length
     return (
       <Box flexDirection="column">
         {flashing ? (
@@ -728,11 +797,16 @@ export const register: Register = (on, options) => {
           const state = stateOf(v)
           // under "Count all checks" the optional failures are already in ✗
           const otherFails = cfg.allChecks ? 0 : pr.others.filter(c => c.bucket === 'fail').length
+          // under "Show steps": step k/n, the percent, and the step it is on in place of the counts
+          const prog = pr.progress?.n ? pr.progress : undefined
+          const cur = prog?.current
           // the label is a Link (cmd+click opens the PR); the rest is one Text, truncated, title
           // last so it is what the width cuts; hovering the row reveals its buttons (no hotkeys:
           // a band hotkey would press on a digit typed as the first character of a prompt).
           // A merged or closed PR is done: the whole line struck through, label, state and title
-          const done = state === 'merged' || state === 'closed'
+          const done = isDone(pr)
+          // merged, but the jobs and deploys its merge set off are still running or one failed
+          const afterMerge = state === 'merged' && !done
           return (
             <Box key={`row:${pr.pane}`} flexDirection="row">
               <Box flexShrink={0}>
@@ -741,18 +815,31 @@ export const register: Register = (on, options) => {
               {done ? (
                 <Text wrap="truncate-end" strikethrough>
                   <Text color={state === 'merged' ? 'magenta' : 'gray'} strikethrough>{` ${state}`}</Text>
+                  <Text dimColor strikethrough>{prog ? ` · ${prog.k}/${prog.n}` : ''}</Text>
                   <Text dimColor strikethrough>{` · ${v.title}`}</Text>
                 </Text>
+              ) : afterMerge ? (
+              <Text wrap="truncate-end">
+                <Text color="magenta">{' merged'}</Text>
+                <Text color="red">{pr.progress?.afterMergeFailed ? ' · after-merge failed' : ''}</Text>
+                <Text dimColor>{prog ? ` · step ${prog.k}/${prog.n} · ` : ''}</Text>
+                <Text color={pr.progress?.afterMergeFailed ? 'red' : 'cyan'}>{prog ? `${prog.pct}%` : ''}</Text>
+                <Text color={cur ? STEP_ICON[cur.state][1] : 'gray'}>{cur ? ` · ${cur.name} ${STEP_ICON[cur.state][0]}` : ''}</Text>
+                <Text color="red">{pr.error ? ' · refresh failed' : ''}</Text>
+                <Text dimColor>{` · ${v.title}`}</Text>
+              </Text>
               ) : (
               <Text wrap="truncate-end">
                 <Text dimColor>{state === 'open' ? ' ' : ` ${state} · `}</Text>
                 <Text color={MERGE[v.mergeStateStatus] ?? 'gray'}>{v.mergeStateStatus.toLowerCase()}</Text>
                 <Text dimColor> · </Text>
                 <Text color={REVIEW[v.reviewDecision] ?? 'gray'}>{reviewOf(v)}</Text>
-                <Text dimColor> · </Text>
-                <Text color="green">{`✓${n('pass')}`}</Text>
-                <Text color="red">{n('fail') + n('cancel') ? ` ✗${n('fail') + n('cancel')}` : ''}</Text>
-                <Text color="yellow">{n('pending') ? ` ●${n('pending')}` : ''}</Text>
+                <Text dimColor>{prog ? ` · step ${prog.k}/${prog.n} · ` : ' · '}</Text>
+                <Text color={prog?.failed ? 'red' : 'cyan'}>{prog ? `${prog.pct}%` : ''}</Text>
+                <Text color={cur ? STEP_ICON[cur.state][1] : 'gray'}>{cur ? ` · ${cur.name} ${STEP_ICON[cur.state][0]}` : ''}</Text>
+                <Text color="green">{prog ? '' : `✓${n('pass')}`}</Text>
+                <Text color="red">{!prog && n('fail') + n('cancel') ? ` ✗${n('fail') + n('cancel')}` : ''}</Text>
+                <Text color="yellow">{!prog && n('pending') ? ` ●${n('pending')}` : ''}</Text>
                 <Text color="red">{otherFails ? ` (+${otherFails} optional ✗)` : ''}</Text>
                 <Text color="red">{pr.error ? ' · refresh failed' : ''}</Text>
                 <Text dimColor>{pr.muted || cfg.muteAll ? ' · muted' : ''}</Text>
@@ -764,7 +851,7 @@ export const register: Register = (on, options) => {
                 <Button key={`copy:${pr.pane}`} label="copy" onPress={press => copy?.(pr.url, press.surface)} />
                 <Button key={`mute:${pr.pane}`} label={pr.muted ? 'unmute' : 'mute'} onPress={() => { pr.muted = !pr.muted; save?.(); $.ui.invalidate('ui.render') }} />
                 <Button key={`details:${pr.pane}`} label="details" onPress={() => { $.ui.open({ id: pr.pane, title: pr.id, focus: true, closeOnEscape: true }) }} />
-                {done ? <Button key={`clear:${pr.pane}`} label={`clear done (${doneCount})`} onPress={() => { clearDone() }} /> : <Box />}
+                {finished(pr) ? <Button key={`clear:${pr.pane}`} label={`clear done (${doneCount})`} onPress={() => { clearDone() }} /> : <Box />}
                 <Button key={`stop:${pr.pane}`} label="×" onPress={() => stop?.(pr)} />
               </Box>
             </Box>
@@ -805,6 +892,24 @@ export const register: Register = (on, options) => {
           <Text> </Text>
           <Button key={`pane-close:${pr.pane}`} label="close" onPress={() => $.ui.close({ id: pr.pane })} />
         </Box>
+        {pr.steps?.length ? (
+          <Box flexDirection="column">
+            <Text bold>{`Steps · ${pr.progress ? stepLabel(pr.progress) : ''}`}</Text>
+            {pr.steps.map(st => {
+              const ms = st.startedAt ? (st.completedAt ? Date.parse(st.completedAt) : pr.updated ?? 0) - Date.parse(st.startedAt) : undefined
+              const med = median(durations.get(pr.id.split('#')[0])?.[st.name] ?? [])
+              const timing = ms !== undefined && ms > 0 ? ` ${fmtDuration(ms)}${st.state === 'running' && med ? ` of ~${fmtDuration(med)}` : ''}` : ''
+              return (
+                <Box key={`step:${pr.pane}:${st.key}`} flexDirection="row">
+                  <Box flexShrink={0}><Text color={STEP_ICON[st.state][1]}>{`${STEP_ICON[st.state][0]} `}</Text></Box>
+                  <Box flexShrink={0}><Text dimColor>{`${st.phase} · `}</Text></Box>
+                  {st.link && linkable(st.link) ? <Link href={st.link} label={st.name} /> : <Text wrap="truncate-end">{st.name}</Text>}
+                  <Text dimColor>{`${st.expected ? ' (expected, from the last merge)' : ''}${timing}`}</Text>
+                </Box>
+              )
+            })}
+          </Box>
+        ) : <Box />}
         <Text bold>{pr.required.length ? `Required checks (${pr.required.length})` : 'Required checks: none reported'}</Text>
         {[...pr.required, ...optionalShown].map((c, i) => (
           <Box key={c.key} flexDirection="row">

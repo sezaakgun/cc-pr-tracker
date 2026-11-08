@@ -135,10 +135,21 @@ Open `/config`; the rows are under cc-pr-tracker. Each also takes `/config cc-pr
 | Stop watching merged or closed PRs | `stopWhenDone` | off | A PR's line goes away once it merges or closes, with a toast saying so. Turning it on drops the lines already done. A PR you paste that is already merged stays until you stop it or turn this on. |
 | Stop watching after (minutes) | `stopAfterMinutes` | 0 | With **Stop watching merged or closed PRs** on, how long a done PR keeps its struck-through line first; the poll that sees it done still alerts. 0 drops it on that poll. 0 to 1440. |
 | Keep at most N merged or closed PRs | `maxDone` | 0 | When more watched PRs than this are merged or closed, the ones that finished first (by GitHub's merge or close time) go, with a toast; the newest N stay struck through. Open PRs never count. Works on its own or with **Stop watching merged or closed PRs**, whichever limit comes first. 0 keeps them all. |
+| Show steps | `showSteps` | off | Each line shows the PR's own steps as `step k/n · NN% · <current step>` in place of the check counts: every check on the head commit in the order it started, a review step when GitHub reports a review decision or a requested reviewer, a merge-queue step when the PR was queued, the merge, then every workflow job and deployment on the merge commit. A merged PR stays live until those finish green (a cancelled run counts as skipped, and only the newest run of a job and the newest deploy per environment count), and a failed one alerts and shows `after-merge failed`. See [Steps](#steps). |
 | Count all checks | `allChecks` | off | The line counts and alerts on every check, not only the required ones; the details panel and `pr_status` list every optional check. |
 | Alert on review changes | `alertOnReview` | off | The review decision moving (for example to `approved` or `changes requested`) alerts too, whatever **Alert on** is set to. |
 | Flash strip | `flash` | on | The one-second `● PR checks changed` strip above the prompt. The toast, sound, cmux pane flash and notification stay. |
 | Show PRs in the transcript | `transcript` | when no band is drawn | `when no band is drawn` (claude.ai/code on the web, the mobile app), `always`, or `never`: each PR's first status and every alert as a transcript line, and a summary in the status line. `/prs` works either way. |
+
+## Steps
+
+With **Show steps** on, a line reads `repo#7 · blocked · review required · step 3/6 · 50% · e2e ● · Fix it`. Nothing is made up: every step is something GitHub reports for that PR, all from the one GraphQL call each poll already makes.
+
+- **Before the merge**, the steps that the repo's last settled merge set off stand in, marked expected, so the count doesn't jump at the merge.
+- **A running step** moves the percent by its elapsed time over the repo's median for that step. Durations are kept in `$.store` as they finish: the last 20 per step, at most 200 steps per repo. The details panel shows each step's time, as `4m10s of ~5m00s` while it runs.
+- **A failing optional check** is listed, but it neither counts nor holds the percent back.
+- **A merged PR** is done only when every job and deployment on its merge commit has finished green. Until then its line stays live and it keeps being polled. A failed job or deploy shows `after-merge failed`, alerts once, and keeps the line. A cancelled run counts as skipped, and a re-run job or a re-deploy to the same environment replaces the earlier attempt. **Stop watching merged or closed PRs** and **Keep at most N** treat the PR as done once it settles; `/pr-clear` and `clear done (N)` remove it anyway, so a run waiting for approval never pins a line.
+- **Over REST** (sessions that refuse GraphQL), lines fall back to the check counts.
 
 ## Troubleshooting
 
@@ -171,7 +182,7 @@ The plugin is one hooks module, `hooks/register.tsx`. It hooks these events:
 
 - `prompt.submit` reads PR URLs from your prompt and starts or stops watching.
 - `turn.complete` reads PR URLs from Claude's final answer, and `tool.call` on Bash reads the URL `gh pr create` prints.
-- `ui.render` on `AbovePrompt` draws the lines; on `Pane` it draws the details panel.
+- `ui.render` on `AbovePrompt` draws the lines; on `Pane` it draws the details panel. Under **Show steps**, `hooks/steps.ts` turns each poll's answer into the steps, the percent and the after-merge state; it is pure and runs no process.
 - `session.start` reads the settings, restores the list, registers the `pr_status` tool and the `/prs` and `/pr-clear` commands, and sets up the timer that polls every watched PR.
 - `command.run` on `prs` prints the list, toggling any PR URLs given; on `pr-clear` it stops watching every merged or closed PR.
 - `session.attach` and `session.detach` re-check whether any surface draws the line, which decides the transcript lines and the status line.
