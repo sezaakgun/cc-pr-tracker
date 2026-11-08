@@ -73,6 +73,7 @@ On Claude Code 2.1.289 or later the list comes back when you resume a session, C
 - **Silence a PR**: hover the line and press `mute`. The line keeps updating but that PR no longer toasts, flashes, plays a sound, notifies cmux or tells Claude; the line ends in `· muted`. Press `unmute` to turn alerts back on.
 - **Silence every PR**: open `/config` and turn on **Mute all PR alerts**. It applies at once, is saved across sessions, and every line ends in `· muted` while it is on. Turn it off to get alerts back; PRs you muted one by one stay muted.
 - **Stop watching**: hover the line and press `×`, or paste the same URL again as the whole prompt. A paste of several URLs toggles each one; a URL inside a normal prompt never stops anything.
+- **Clear the merged and closed PRs**: run `/pr-clear`, or hover a struck-through line and press `clear done (N)`. Every merged or closed line goes at once; open PRs stay.
 - **Print the PRs in the transcript**: run `/prs`. Each PR gets its line, its URL and every required check that is not passing, with its log link; failing optional checks are listed too. `/prs <PR URL>…` starts or stops watching those PRs first, like a paste. It polls before it answers and runs even while Claude is working.
 
 Several PRs stack, one line each, in the order you added them.
@@ -94,7 +95,7 @@ The list is kept with the session. Resuming it (`claude --resume`, `--continue`)
 
 ## Reading the line
 
-- **Label**: `repo#number`, then `draft`, `merged` or `closed` when the PR is not simply open. A merged or closed PR keeps its line until you stop it, shortened to its label, its state in magenta (merged) or gray (closed) and its title, all struck through. With **Stop watching merged or closed PRs** on, the line goes away instead.
+- **Label**: `repo#number`, then `draft`, `merged` or `closed` when the PR is not simply open. A merged or closed PR keeps its line until you stop it, shortened to its label, its state in magenta (merged) or gray (closed) and its title, all struck through. With **Stop watching merged or closed PRs** on, the line goes away instead, at once or after **Stop watching after** minutes. **Keep at most N merged or closed PRs** keeps only the newest N. `/pr-clear` drops every done line.
 - **Merge state** is GitHub's own value, lowercased. Green (`clean`, `has_hooks`) means mergeable now. Yellow (`behind`, `unstable`) means update the branch or an optional check failed. Red (`blocked`, `dirty`) means a required check or review is missing, or there are conflicts. Gray (`draft`, `unknown`) needs no action; `unknown` usually resolves on the next poll.
 - **Review decision** is `approved` in green, `changes requested` in red, `review required` in yellow, or `no review` in gray when the repo has no review rules.
 - **Checks** count only the required ones: `✓N` passed, `✗N` failed or cancelled, `●N` pending. Skipped checks are not counted and show as `○` only in the details panel. Failing optional checks are summarised as `(+N optional ✗)` and listed there too. With **Count all checks** on, the counts cover every check, so there is no optional summary, and the details panel lists every optional check.
@@ -132,6 +133,8 @@ Open `/config`; the rows are under cc-pr-tracker. Each also takes `/config cc-pr
 | Auto-watch PRs | `autoWatch` | answers and gh pr create | `answers and gh pr create`, `gh pr create only`, or `off`. Pasted URLs are always watched. |
 | Remember watched PRs | `remember` | this session | `this session`: resuming it brings the list back, a new session starts empty. `this project`: every new session in the directory watches the list. |
 | Stop watching merged or closed PRs | `stopWhenDone` | off | A PR's line goes away once it merges or closes, with a toast saying so. Turning it on drops the lines already done. A PR you paste that is already merged stays until you stop it or turn this on. |
+| Stop watching after (minutes) | `stopAfterMinutes` | 0 | With **Stop watching merged or closed PRs** on, how long a done PR keeps its struck-through line first; the poll that sees it done still alerts. 0 drops it on that poll. 0 to 1440. |
+| Keep at most N merged or closed PRs | `maxDone` | 0 | When more watched PRs than this are merged or closed, the ones that finished first (by GitHub's merge or close time) go, with a toast; the newest N stay struck through. Open PRs never count. Works on its own or with **Stop watching merged or closed PRs**, whichever limit comes first. 0 keeps them all. |
 | Count all checks | `allChecks` | off | The line counts and alerts on every check, not only the required ones; the details panel and `pr_status` list every optional check. |
 | Alert on review changes | `alertOnReview` | off | The review decision moving (for example to `approved` or `changes requested`) alerts too, whatever **Alert on** is set to. |
 | Flash strip | `flash` | on | The one-second `● PR checks changed` strip above the prompt. The toast, sound, cmux pane flash and notification stay. |
@@ -158,7 +161,7 @@ Open `/config`; the rows are under cc-pr-tracker. Each also takes `/config cc-pr
 - The line, the hover buttons and the details panel are the terminal's and the desktop app's. On the web and the mobile app it is `/prs`, transcript lines and the status line (see [On the web and on your phone](#on-the-web-and-on-your-phone)).
 - Over REST (sessions that refuse GraphQL), a check counts as required when the base branch's protection or rulesets name it; a branch whose protection the token cannot read leaves every check optional. The review decision is read from each reviewer's latest review, so `approved` shows even on a repo with no review rules.
 - A PR created in the browser or from another terminal must be pasted. Claude only auto-watches PRs whose URL appears in its answer or in `gh pr create` output.
-- Merged and closed PRs keep polling until you stop them, unless **Stop watching merged or closed PRs** is on.
+- Merged PRs are not polled on the timer; closed ones are, so a reopen shows. Their lines stay until you stop them or run `/pr-clear`, unless **Stop watching merged or closed PRs** is on.
 - Only `github.com` URLs are recognised; GitHub Enterprise hosts are not.
 - GitHub's rate limit is not handled specially; a refused poll shows `refresh failed` and the next one retries.
 
@@ -169,8 +172,8 @@ The plugin is one hooks module, `hooks/register.tsx`. It hooks these events:
 - `prompt.submit` reads PR URLs from your prompt and starts or stops watching.
 - `turn.complete` reads PR URLs from Claude's final answer, and `tool.call` on Bash reads the URL `gh pr create` prints.
 - `ui.render` on `AbovePrompt` draws the lines; on `Pane` it draws the details panel.
-- `session.start` reads the settings, restores the list, registers the `pr_status` tool and the `/prs` command, and sets up the timer that polls every watched PR.
-- `command.run` on `prs` prints the list, toggling any PR URLs given.
+- `session.start` reads the settings, restores the list, registers the `pr_status` tool and the `/prs` and `/pr-clear` commands, and sets up the timer that polls every watched PR.
+- `command.run` on `prs` prints the list, toggling any PR URLs given; on `pr-clear` it stops watching every merged or closed PR.
 - `session.attach` and `session.detach` re-check whether any surface draws the line, which decides the transcript lines and the status line.
 - `config.set` applies a settings change at once; `config.describe` adds the watched and muted counts to the Mute all row.
 - `tool.call` on `mcp__cc-pr-tracker__pr_status` polls the asked PRs and answers that tool.
